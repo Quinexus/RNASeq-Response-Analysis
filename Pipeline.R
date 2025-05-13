@@ -10,6 +10,18 @@ library(SummarizedExperiment)
 library(EnhancedVolcano)
 library(tidyverse)
 
+# To mouse case
+
+to_mouse_case <- function(symbols) {
+  sapply(symbols, function(g) {
+    if (nchar(g) == 0) return("")
+    first <- substr(g, 1, 1)
+    rest <- tolower(substr(g, 2, nchar(g)))
+    paste0(first, rest)
+  })
+}
+
+
 # 1. Read in data
 load_rna_dataset <- function(counts, metadata) {
   if (is.character(counts)) read.csv(counts, row.names = 1)
@@ -96,7 +108,10 @@ merge_annotate <- function(df, species, method = "annodbi") {
   # Run annotation
   if (method == "biomart") annotation <- biomart_annotation(rownames(df), species)
   else if (method == "annodbi") annotation <- annodbi_annotation(rownames(df), species)
-  else if (method == "none") return(df)
+  else if (method == "none") {
+    df$gene_name <- rownames(df)
+    return(df)
+  }
   else stop("method not available")
   
   # merge based on original unedited ensembl ids
@@ -160,9 +175,19 @@ run_deseq <- function(dds, print_res_names = FALSE, contrast=NULL) {
 # 4. Visualise Data
 
 ## Volcano plot
-visualise_volcano <- function(res, title="Volcano Plot") {
-  if("gene_name" %in% colnames(res)) labels <- res$gene_name else labels <- rownames(res)
+visualise_volcano <- function(res, title="Volcano Plot", proteins=NULL) {
+  if("gene_name" %in% colnames(res)) {
+    labels <- res$gene_name 
+  } else labels <- rownames(res)
+    
+  
   plot(EnhancedVolcano(res, lab = labels, x = 'log2FoldChange', y = 'padj', title = title))
+  
+  if(!is.null(proteins) & "gene_name" %in% colnames(res)) {
+    filtered_res <- res[res$gene_name %in% proteins, ]
+    labels <- filtered_res$gene_name
+    plot(EnhancedVolcano(filtered_res, lab = labels, x = 'log2FoldChange', y = 'padj', title = title))
+  }
 }
 
 ## PCA plot
@@ -175,17 +200,17 @@ visualise_pca <- function(dds, design) {
 }
 
 ## Processing to loop through resultsNames
-process_visualise <- function(dds, species, annotation) {
+process_visualise <- function(dds, species, annotation, proteins=NULL) {
   results_names <- resultsNames(dds)
   for (i in 2:(length(results_names))) {
     res <- results(dds, name = results_names[i]) %>% as.data.frame() %>% merge_annotate(species, annotation)
     res <- res[order(res$padj),]
-    visualise_volcano(res, results_names[i])
+    visualise_volcano(res, results_names[i], proteins)
   }
 }
 
 # THE PIPELINE
-rna_seq_pipeline <- function(counts, metadata, design, species, annotation="annodbi", txi=FALSE, contrast=NULL) {
+rna_seq_pipeline <- function(counts, metadata, design, species, annotation="annodbi", txi=FALSE, contrast=NULL, proteins=NULL) {
   if(!txi){
     raw_data <- load_rna_dataset(counts, metadata)
     dds <- prepare_dds(raw_data$counts, raw_data$metadata, design)
@@ -194,14 +219,14 @@ rna_seq_pipeline <- function(counts, metadata, design, species, annotation="anno
   }
 
   de_res <- run_deseq(dds, FALSE, contrast) 
-  process_visualise(de_res$dds, species, annotation)
+  process_visualise(de_res$dds, species, annotation, proteins)
   
   # visualise_pca(de_res$dds, design)
   return(de_res$dds)
 }
 
 # TREATMENT RESPONSE PIPELINE without interaction
-treatment_response_pipeline <- function(counts, metadata, species, annotation, treatment, txi=FALSE) {
+treatment_response_pipeline <- function(counts, metadata, species, annotation, treatment, txi=FALSE, proteins=NULL) {
   # Prepare dds
   if (txi) dds <- prepare_txi(counts, metadata, ~response)
   else dds <- prepare_dds(counts, metadata, ~response)
@@ -215,11 +240,11 @@ treatment_response_pipeline <- function(counts, metadata, species, annotation, t
   de_res <- run_deseq(dds_treatment, FALSE, NULL) 
   
   # Plot volcano
-  process_visualise(de_res$dds, species, annotation)
+  process_visualise(de_res$dds, species, annotation, proteins=proteins)
 }
 
 # TREATMENT RESPONSE PIPELINE with interaction
-treatment_response_interaction_pipeline <- function(counts, metadata, species, annotation_method = "none", txi=FALSE) {
+treatment_response_interaction_pipeline <- function(counts, metadata, species, annotation_method = "none", txi=FALSE, proteins=NULL) {
   # Set factor levels explicitly to control reference levels
   metadata$treatment <- factor(metadata$treatment, levels = c("Treated", "Untreated"))
   metadata$response <- factor(metadata$response, levels = c("Nonresponder", "Responder"))
@@ -248,15 +273,7 @@ treatment_response_interaction_pipeline <- function(counts, metadata, species, a
   res_interaction <- res_interaction[order(res_interaction$padj), ]
   
   # Visualize
-  visualise_volcano(res_treated, "Responder vs Nonresponder (Treated)")
-  visualise_volcano(res_untreated, "Responder vs Nonresponder (Untreated)")
-  visualise_volcano(res_interaction, "Interaction Effect")
-  
-  # Return a named list of results
-  return(list(
-    dds = dds,
-    treated_vs_nonresponder = res_treated,
-    untreated_vs_nonresponder = res_untreated,
-    interaction = res_interaction
-  ))
+  visualise_volcano(res_treated, "Responder vs Nonresponder (Treated)", proteins=proteins)
+  visualise_volcano(res_untreated, "Responder vs Nonresponder (Untreated)", proteins=proteins)
+  visualise_volcano(res_interaction, "Interaction Effect", proteins=proteins)
 }
