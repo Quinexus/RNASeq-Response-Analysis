@@ -186,7 +186,7 @@ visualise_volcano <- function(res, title="Volcano Plot", proteins=NULL) {
   if(!is.null(proteins) & "gene_name" %in% colnames(res)) {
     filtered_res <- res[res$gene_name %in% proteins, ]
     labels <- filtered_res$gene_name
-    plot(EnhancedVolcano(filtered_res, lab = labels, x = 'log2FoldChange', y = 'padj', title = title))
+    plot(EnhancedVolcano(filtered_res, lab = labels, x = 'log2FoldChange', y = 'padj', title = title, pCutoff = 0.05))
   }
 }
 
