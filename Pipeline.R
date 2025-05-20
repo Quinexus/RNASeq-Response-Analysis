@@ -8,6 +8,9 @@ library(org.Hs.eg.db)
 library(org.Mm.eg.db)
 library(SummarizedExperiment)
 library(EnhancedVolcano)
+library(pheatmap)
+library(clusterProfiler)
+library(msigdbr)
 library(tidyverse)
 
 # To mouse case
@@ -23,13 +26,17 @@ to_mouse_case <- function(symbols) {
 
 # 1. Read in data
 load_rna_dataset <- function(counts, metadata, is_txi=FALSE) {
+  # read in csv files
   if (is.character(counts)) read.csv(counts, row.names = 1)
   if (is.character(metadata)) read.csv(metadata, row.names = 1)
   
+  # check if txi set
   if (is_txi) counts_data <- counts[["counts"]] %>% as.data.frame()
   else counts_data <- counts
-  
+
+  # order metadata
   metadata <- metadata[colnames(counts_data), ]
+  # check if columns deseq2 appropriate
   stopifnot(all(colnames(counts_data) == rownames(metadata)))
   
   return(list(counts = counts, metadata = metadata))
@@ -128,7 +135,12 @@ merge_annotate <- function(df, species, method = "annodbi") {
 # Using DESeq2
 
 ## Prepping dds
-prepare_dds <- function(counts, metadata, design, is.txi=FALSE, use_custom_function=TRUE, parameter="untreated") {
+prepare_dds <- function(counts, 
+                        metadata, 
+                        design, 
+                        is.txi=FALSE, 
+                        use_custom_function=TRUE, 
+                        parameter="untreated") { 
   # Use given formula or create based on column
   if (is_formula(design)) formula <- design
   else if (!use_custom_function) formula <- as.formula(paste0("~ ", design))
@@ -140,8 +152,9 @@ prepare_dds <- function(counts, metadata, design, is.txi=FALSE, use_custom_funct
   
   # Prepare DDS object
   if (!is.txi) dds <- DESeqDataSetFromMatrix(counts, metadata, formula)
-  else dds <- DESeq2::DESeqDataSetFromTximport(txi, metadata, formula)
+  else dds <- DESeq2::DESeqDataSetFromTximport(counts, metadata, formula)
   
+  # relevel as required
   if(use_custom_function & !is.null(design_data$reference)) dds$group <- relevel(dds$group, ref=design_data$reference)
   
   # Remove low counts
@@ -152,10 +165,12 @@ prepare_dds <- function(counts, metadata, design, is.txi=FALSE, use_custom_funct
 }
 
 design_formula <- function(metadata, design, reference) {
+  # if response return response
   if (design == "response") {
     formula <- as.formula("~ response")
     reference <- NULL
   }
+  # if multifactorial create new column and deal with it
   else if (design == "response + treatment") {
     metadata$group <- paste0(tolower(metadata$response), tolower(metadata$treatment))
     formula <- as.formula("~ group")
@@ -168,12 +183,15 @@ design_formula <- function(metadata, design, reference) {
 run_deseq <- function(dds, species, method) {
   # Run DESeq2
   dds <- DESeq(dds)
-  resnames <- print(resultsNames(dds))
   
+  # get resultsNames, results and title
+  resnames <- resultsNames(dds)
   if (length(resnames) == 2) title <- resnames[2] else title <- "group_responderuntreated_vs_nonresponderuntreated"
-  
   res <- results(dds, name = title)
+  
+  # order res and annotate
   res <- res[order(res$padj),] %>% as.data.frame() %>% merge_annotate(species, method)
+  
   return(list(res=res, dds=dds, title=title))
 }
 
@@ -186,13 +204,18 @@ rna_seq_analysis <- function(counts, metadata, design,
                              plot.volcano=FALSE,
                              plot.pca=FALSE) {
   
+  # 1. Load in data
   raw_data <- load_rna_dataset(counts, metadata, is.txi)
+  # 2. Prepare dds object
   dds <- prepare_dds(raw_data$counts, raw_data$metadata, design, is.txi, parameter=treatment)
+  # 3. Run deseq2 and annotate
   de_res <- run_deseq(dds, species, annotation)
   
+  # 4. Visualise as necessary
   if(plot.volcano) visualise_volcano(de_res)
   if(plot.pca) visualise_pca(de_res)
   
+  # return list of dds, res and title
   return(de_res)
 }
 
@@ -200,32 +223,95 @@ rna_seq_analysis <- function(counts, metadata, design,
 
 ## Volcano plot
 visualise_volcano <- function(de_res, proteins=NULL) {
+  # get res
   res <- de_res$res
+  # use only proteins passed in
+  if (!is.null(proteins)) res <- res[res$gene_name %in% proteins, ]
   
-  if (!is.null(proteins)) res <- res[rownames(res) %in% proteins, ]
-  
-  plot(EnhancedVolcano(de_res$res, lab = de_res$res$gene_name, x = 'log2FoldChange', y = 'padj', title = de_res$title, pCutoff = 0.05))
+  plot(EnhancedVolcano(res, 
+                       lab = res$gene_name, 
+                       x = 'log2FoldChange', 
+                       y = 'padj', 
+                       title = de_res$title, 
+                       pCutoff = 0.05))
 }
 
 ## PCA plot
 visualise_pca <- function(de_res) {
-    vsd <- vst(de_res$dds, blind=FALSE)
-    plot(plotPCA(vsd, intgroup=c("response")))
+  # get vsd
+  vsd <- vst(de_res$dds, blind=FALSE)
+  plot(plotPCA(vsd, intgroup=c("response")))
 }
 
-visualise_heatmap <- function(de_res) {
+## Heatmap plot
+visualise_heatmap <- function(de_res, proteins=NULL) {
+  # get relevant data
+  res <- de_res$res
+  vsd <- vst(de_res$dds, blind = FALSE)
   
+  # filter out needed data
+  if (is.null(proteins)) res <- res[res$padj < 0.05 & abs(res$log2FoldChange) > 1, ]
+  else res <- res[res$gene_name %in% proteins & !is.na(res$gene_name), ]
+  
+  # remove na and duplicates
+  res <- res[!is.na(res$gene_name), ]
+  res <- res[rownames(res) %in% rownames(vsd), ]
+  res <- res[!duplicated(res$gene_name), ]
+  
+  # get expression data
+  expr_data <- assay(vsd)[rownames(res), , drop = FALSE]
+  rownames(expr_data) <- res$gene_name
+  
+  scale.dat <- t(scale(t(expr_data)))
+  df <- as.data.frame(colData(de_res$dds)[, "response", drop = FALSE])
+  
+  pheatmap(scale.dat,
+           cluster_rows = FALSE,
+           show_rownames = TRUE,
+           show_colnames = FALSE,
+           cluster_cols = FALSE,
+           annotation_col = df)
 }
+
 
 view_res_table <- function(de_res, direction=NULL) {
+  # get data
   res <- de_res$res %>% as.data.frame()
   res <- res[!is.na(res$padj),]
 
+  # get direction
   if(!is.null(direction)) {
     if (tolower(direction) == "up") res <- res[res$log2FoldChange > 1,]
     else res <- res[res$log2FoldChange < -1,]
   }
-  print(res[res$padj <= 0.05,])
+  return(res[res$padj <= 0.05,])
 }
 
+# 5. Pathway Enrichment (GSEA with MSigDB Hallmark sets)
+pathway_enrichment <- function(de_res, species = "human", category = "H") {
+  # get DESeq2 results
+  res <- de_res$res
+  # remove NAs
+  res <- res[!is.na(res$gene_name) & !is.na(res$stat), ]
+  # remove duplicates (keep highest stat per gene)
+  res <- res[!duplicated(res$gene_name), ]
+
+  # Create ranked gene list
+  geneList <- res$stat
+  names(geneList) <- res$gene_name
+  geneList <- sort(geneList, decreasing = TRUE)
+  
+  # For enricher
+  sig_genes <- res$gene_name[res$padj < 0.05 & abs(res$log2FoldChange) > 1]
+  
+  # Get MSigDB hallmark gene sets
+  msigdb_sets <- msigdbr(species = species, collection = category)
+  msigdbr_t2g <- dplyr::distinct(msigdb_sets, gs_name, gene_symbol)
+  
+  # Run enricher
+  gseaRes <- GSEA(geneList, TERM2GENE = msigdbr_t2g)
+  enrichRes <- enricher(sig_genes, TERM2GENE = msigdbr_t2g)
+  
+  return(gseaRes@result)
+}
 
