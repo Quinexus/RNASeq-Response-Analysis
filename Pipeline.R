@@ -11,7 +11,6 @@ library(EnhancedVolcano)
 library(tidyverse)
 
 # To mouse case
-
 to_mouse_case <- function(symbols) {
   sapply(symbols, function(g) {
     if (nchar(g) == 0) return("")
@@ -23,28 +22,25 @@ to_mouse_case <- function(symbols) {
 
 
 # 1. Read in data
-load_rna_dataset <- function(counts, metadata) {
+load_rna_dataset <- function(counts, metadata, is_txi=FALSE) {
   if (is.character(counts)) read.csv(counts, row.names = 1)
   if (is.character(metadata)) read.csv(metadata, row.names = 1)
   
-  metadata <- metadata[colnames(counts), ]
+  if (is_txi) counts_data <- counts[["counts"]] %>% as.data.frame()
+  else counts_data <- counts
   
-  stopifnot(all(colnames(counts) == rownames(metadata)))
+  metadata <- metadata[colnames(counts_data), ]
+  stopifnot(all(colnames(counts_data) == rownames(metadata)))
+  
   return(list(counts = counts, metadata = metadata))
 }
 
 # 2. Gene Annotation
 # Using biomart
-biomart_annotation <- function(ensembl_list, species, use_species_attr=FALSE) {
+biomart_annotation <- function(ensembl_list, species) {
   # Determine dataset needed
-  if (species == "human") {
-    ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
-    spec_attr <- "hgnc_symbol"
-  }
-  else if (species == "mouse") {
-    ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
-    spec_attr <- "mgi_symbol"
-  }
+  if (species == "human") ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  else if (species == "mouse") ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
   else stop("Species must be mouse or human!")
   
   # Remove version number
@@ -54,7 +50,7 @@ biomart_annotation <- function(ensembl_list, species, use_species_attr=FALSE) {
   id_type <- ifelse(all(grepl("^ENST", ids)), "ensembl_transcript_id", "ensembl_gene_id")
   
   # Attributes needed
-  attributes <- ifelse(use_species_attr, c(id_type, spec_attr), c(id_type, "external_gene_name"))
+  attributes <- c(id_type, "external_gene_name")
   
   # Run biomaRt
   gene_names <- getBM(
@@ -63,8 +59,6 @@ biomart_annotation <- function(ensembl_list, species, use_species_attr=FALSE) {
     values = ids,
     mart = ensembl
   )
-  
-  print(gene_names)
   
   # Ensure all input IDs are returned, even if not annotated
   df_input <- data.frame(input_id = ids, original = ensembl_list)
@@ -80,7 +74,8 @@ annodbi_annotation <- function(ensembl_list, species) {
   ids <- sub("\\..*", "", ensembl_list)
   
   if(species == "human") orgdb <- org.Hs.eg.db
-  else orgdb <- org.Mm.eg.db
+  else if (species == "mouse") orgdb <- org.Mm.eg.db
+  else stop("Species must be mouse or human!")
   
   # Annotate only valid Ensembl IDs
   annotations_orgDb <- AnnotationDbi::select(
@@ -133,15 +128,21 @@ merge_annotate <- function(df, species, method = "annodbi") {
 # Using DESeq2
 
 ## Prepping dds
-prepare_dds <- function(counts, metadata, design) {
+prepare_dds <- function(counts, metadata, design, is.txi=FALSE, use_custom_function=TRUE, parameter="untreated") {
   # Use given formula or create based on column
-  if (!is_formula(design)) formula <- as.formula(paste0("~ ", design))
-  else formula <- design
+  if (is_formula(design)) formula <- design
+  else if (!use_custom_function) formula <- as.formula(paste0("~ ", design))
+  else {
+    design_data <- design_formula(metadata, design, parameter)
+    formula <- design_data$formula
+    metadata <- design_data$metadata
+  }
   
   # Prepare DDS object
-  dds <- DESeqDataSetFromMatrix(countData = counts,
-                                colData = metadata,
-                                design = formula)
+  if (!is.txi) dds <- DESeqDataSetFromMatrix(counts, metadata, formula)
+  else dds <- DESeq2::DESeqDataSetFromTximport(txi, metadata, formula)
+  
+  if(use_custom_function & !is.null(design_data$reference)) dds$group <- relevel(dds$group, ref=design_data$reference)
   
   # Remove low counts
   keep <- rowSums(counts(dds) >= 10) >= 3
@@ -150,130 +151,81 @@ prepare_dds <- function(counts, metadata, design) {
   return(dds)
 }
 
-## Prepping tximport
-prepare_txi <- function(txi, metadata, design) {
-  dds <- DESeq2::DESeqDataSetFromTximport(txi, metadata, design)
-  return(dds)
+design_formula <- function(metadata, design, reference) {
+  if (design == "response") {
+    formula <- as.formula("~ response")
+    reference <- NULL
+  }
+  else if (design == "response + treatment") {
+    metadata$group <- paste0(tolower(metadata$response), tolower(metadata$treatment))
+    formula <- as.formula("~ group")
+    reference <- paste0("nonresponder", reference)
+  }
+  return(list(formula=formula, metadata=metadata, reference=reference))
 }
 
 ## Running DESeq2
-run_deseq <- function(dds, print_res_names = FALSE, contrast=NULL) {
+run_deseq <- function(dds, species, method) {
   # Run DESeq2
   dds <- DESeq(dds)
+  resnames <- print(resultsNames(dds))
   
-  # Print results names to see possible contrasts
-  if(print_res_names) print(resultsNames(dds))
+  if (length(resnames) == 2) title <- resnames[2] else title <- "group_responderuntreated_vs_nonresponderuntreated"
   
-  if(is.null(contrast)) res <- results(dds)
-  else res <- results(dds, contrast = contrast)
-  
-  res <- res[order(res$padj),]
+  res <- results(dds, name = title)
+  res <- res[order(res$padj),] %>% as.data.frame() %>% merge_annotate(species, method)
+  return(list(res=res, dds=dds, title=title))
+}
 
-  return(list(res=res, dds=dds))
+## Analysis Pipeline
+rna_seq_analysis <- function(counts, metadata, design, 
+                             species="human",
+                             is.txi=FALSE, 
+                             annotation="biomart", 
+                             treatment="untreated",
+                             plot.volcano=FALSE,
+                             plot.pca=FALSE) {
+  
+  raw_data <- load_rna_dataset(counts, metadata, is.txi)
+  dds <- prepare_dds(raw_data$counts, raw_data$metadata, design, is.txi, parameter=treatment)
+  de_res <- run_deseq(dds, species, annotation)
+  
+  if(plot.volcano) visualise_volcano(de_res)
+  if(plot.pca) visualise_pca(de_res)
+  
+  return(de_res)
 }
 
 # 4. Visualise Data
 
 ## Volcano plot
-visualise_volcano <- function(res, title="Volcano Plot", proteins=NULL) {
-  if("gene_name" %in% colnames(res)) {
-    labels <- res$gene_name 
-  } else labels <- rownames(res)
-    
+visualise_volcano <- function(de_res, proteins=NULL) {
+  res <- de_res$res
   
-  plot(EnhancedVolcano(res, lab = labels, x = 'log2FoldChange', y = 'padj', title = title))
+  if (!is.null(proteins)) res <- res[rownames(res) %in% proteins, ]
   
-  if(!is.null(proteins) & "gene_name" %in% colnames(res)) {
-    filtered_res <- res[res$gene_name %in% proteins, ]
-    labels <- filtered_res$gene_name
-    plot(EnhancedVolcano(filtered_res, lab = labels, x = 'log2FoldChange', y = 'padj', title = title, pCutoff = 0.05))
-  }
+  plot(EnhancedVolcano(de_res$res, lab = de_res$res$gene_name, x = 'log2FoldChange', y = 'padj', title = de_res$title, pCutoff = 0.05))
 }
 
 ## PCA plot
-visualise_pca <- function(dds, design) {
-  if (!is_formula(design)) {
-    vsd <- vst(dds, blind=FALSE)
-    plot(plotPCA(vsd, intgroup=c(as.character(design))))
+visualise_pca <- function(de_res) {
+    vsd <- vst(de_res$dds, blind=FALSE)
+    plot(plotPCA(vsd, intgroup=c("response")))
+}
+
+visualise_heatmap <- function(de_res) {
+  
+}
+
+view_res_table <- function(de_res, direction=NULL) {
+  res <- de_res$res %>% as.data.frame()
+  res <- res[!is.na(res$padj),]
+
+  if(!is.null(direction)) {
+    if (tolower(direction) == "up") res <- res[res$log2FoldChange > 1,]
+    else res <- res[res$log2FoldChange < -1,]
   }
-  else print("VSD not plotted, please plot mannually")
+  print(res[res$padj <= 0.05,])
 }
 
-## Processing to loop through resultsNames
-process_visualise <- function(dds, species, annotation, proteins=NULL) {
-  results_names <- resultsNames(dds)
-  for (i in 2:(length(results_names))) {
-    res <- results(dds, name = results_names[i]) %>% as.data.frame() %>% merge_annotate(species, annotation)
-    res <- res[order(res$padj),]
-    visualise_volcano(res, results_names[i], proteins)
-  }
-}
 
-# THE PIPELINE
-rna_seq_pipeline <- function(counts, metadata, design, species, annotation="annodbi", txi=FALSE, contrast=NULL, proteins=NULL) {
-  if(!txi){
-    raw_data <- load_rna_dataset(counts, metadata)
-    dds <- prepare_dds(raw_data$counts, raw_data$metadata, design)
-  } else {
-    dds <- prepare_txi(counts, metadata, design)
-  }
-
-  de_res <- run_deseq(dds, FALSE, contrast) 
-  process_visualise(de_res$dds, species, annotation, proteins)
-  
-  # visualise_pca(de_res$dds, design)
-  return(de_res$dds)
-}
-
-# TREATMENT RESPONSE PIPELINE without interaction
-treatment_response_pipeline <- function(counts, metadata, species, annotation, treatment, txi=FALSE, proteins=NULL) {
-  # Prepare dds
-  if (txi) dds <- prepare_txi(counts, metadata, ~response)
-  else dds <- prepare_dds(counts, metadata, ~response)
-  
-  # Filter by treatment
-  dds_treatment <- dds[, dds$treatment == treatment]
-  dds_treatment[[treatment]] <- droplevels(dds_treatment$response)
-  design(dds_treatment) <- as.formula(paste0("~ ", treatment))
-  
-  # Run DESeq2
-  de_res <- run_deseq(dds_treatment, FALSE, NULL) 
-  
-  # Plot volcano
-  process_visualise(de_res$dds, species, annotation, proteins=proteins)
-}
-
-# TREATMENT RESPONSE PIPELINE with interaction
-treatment_response_interaction_pipeline <- function(counts, metadata, species, annotation_method = "none", txi=FALSE, proteins=NULL) {
-  # Set factor levels explicitly to control reference levels
-  metadata$treatment <- factor(metadata$treatment, levels = c("Treated", "Untreated"))
-  metadata$response <- factor(metadata$response, levels = c("Nonresponder", "Responder"))
-  
-  # Prepare DESeqDataSet with interaction model
-  if(!txi) dds <- prepare_dds(counts, metadata, ~ treatment + response + treatment:response)
-  else dds <- prepare_txi(counts, metadata, ~ treatment + response + treatment:response)
-  
-  # Run DESeq
-  dds <- DESeq(dds)
-  print(resultsNames(dds))  # Show available contrast names for transparency
-  
-  # Extract contrasts
-  res_treated <- results(dds, name = "response_Responder_vs_Nonresponder")
-  res_untreated <- results(dds, contrast = list(c("response_Responder_vs_Nonresponder", "treatmentUntreated.responseResponder")))
-  res_interaction <- results(dds, name = "treatmentUntreated.responseResponder")
-  
-  # Annotate results
-  res_treated <- merge_annotate(as.data.frame(res_treated), species, method = annotation_method)
-  res_untreated <- merge_annotate(as.data.frame(res_untreated), species, method = annotation_method)
-  res_interaction <- merge_annotate(as.data.frame(res_interaction), species, method = annotation_method)
-  
-  # Order by adjusted p-value
-  res_treated <- res_treated[order(res_treated$padj), ]
-  res_untreated <- res_untreated[order(res_untreated$padj), ]
-  res_interaction <- res_interaction[order(res_interaction$padj), ]
-  
-  # Visualize
-  visualise_volcano(res_treated, "Responder vs Nonresponder (Treated)", proteins=proteins)
-  visualise_volcano(res_untreated, "Responder vs Nonresponder (Untreated)", proteins=proteins)
-  visualise_volcano(res_interaction, "Interaction Effect", proteins=proteins)
-}
