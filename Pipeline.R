@@ -12,6 +12,9 @@ library(pheatmap)
 library(clusterProfiler)
 library(msigdbr)
 library(tidyverse)
+library(grid)
+library(gridExtra)
+library(png)
 
 # To mouse case
 to_mouse_case <- function(symbols) {
@@ -201,8 +204,7 @@ rna_seq_analysis <- function(counts, metadata, design,
                              is.txi=FALSE, 
                              annotation="biomart", 
                              treatment="untreated",
-                             plot.volcano=FALSE,
-                             plot.pca=FALSE) {
+                             print=FALSE) {
   
   # 1. Load in data
   raw_data <- load_rna_dataset(counts, metadata, is.txi)
@@ -212,9 +214,9 @@ rna_seq_analysis <- function(counts, metadata, design,
   de_res <- run_deseq(dds, species, annotation)
   
   # 4. Visualise as necessary
-  if(plot.volcano) visualise_volcano(de_res)
-  if(plot.pca) visualise_pca(de_res)
-  
+  doPathway <- ifelse(species == "mouse", FALSE, TRUE)
+  if(print) printer_analysis(de_res, do_pathway = doPathway, species = species)
+    
   # return list of dds, res and title
   return(de_res)
 }
@@ -222,29 +224,37 @@ rna_seq_analysis <- function(counts, metadata, design,
 # 4. Visualise Data
 
 ## Volcano plot
-visualise_volcano <- function(de_res, proteins=NULL) {
+visualise_volcano <- function(de_res, proteins=NULL, plot=TRUE, save=FALSE, save_name="volcano.png") {
   # get res
   res <- de_res$res
   # use only proteins passed in
   if (!is.null(proteins)) res <- res[res$gene_name %in% proteins, ]
   
-  plot(EnhancedVolcano(res, 
+  volcanoPlot <- EnhancedVolcano(res, 
                        lab = res$gene_name, 
                        x = 'log2FoldChange', 
                        y = 'padj', 
                        title = de_res$title, 
-                       pCutoff = 0.05))
+                       pCutoff = 0.05)
+  if(plot) plot(volcanoPlot)
+  if(save) ggsave(save_name, volcanoPlot)
 }
 
 ## PCA plot
-visualise_pca <- function(de_res) {
+visualise_pca <- function(de_res, plot=TRUE, save=FALSE, save_name="pca.png") {
   # get vsd
   vsd <- vst(de_res$dds, blind=FALSE)
-  plot(plotPCA(vsd, intgroup=c("response")))
+  
+  # check if treatment column exists
+  if ("treatment" %in% (colData(de_res$dds) %>% as.data.frame %>% colnames())) pcaPlot <- plotPCA(vsd, intgroup=c("response", "treatment")) 
+  else pcaPlot <- plotPCA(vsd, intgroup=c("response"))
+  
+  if(plot) plot(pcaPlot)
+  if(save) ggsave(save_name, pcaPlot)
 }
 
 ## Heatmap plot
-visualise_heatmap <- function(de_res, proteins=NULL) {
+visualise_heatmap <- function(de_res, proteins=NULL, plot=TRUE, save=FALSE, save_name="heatmap.png") {
   # get relevant data
   res <- de_res$res
   vsd <- vst(de_res$dds, blind = FALSE)
@@ -265,14 +275,37 @@ visualise_heatmap <- function(de_res, proteins=NULL) {
   scale.dat <- t(scale(t(expr_data)))
   df <- as.data.frame(colData(de_res$dds)[, "response", drop = FALSE])
   
-  pheatmap(scale.dat,
+  heatmap <- pheatmap(scale.dat,
            cluster_rows = FALSE,
            show_rownames = TRUE,
            show_colnames = FALSE,
            cluster_cols = FALSE,
-           annotation_col = df)
+           annotation_col = df,
+           silent=plot)
+  
+  if(save) save_pheatmap(heatmap, save_name)
 }
 
+# save heatmap function taken from: https://gist.github.com/mathzero/a2070a24a6b418740c44a5c023f5c01e
+save_pheatmap <- function(x, filename, width=12, height=12){
+  stopifnot(!missing(x))
+  stopifnot(!missing(filename))
+  if(grepl(".png",filename)){
+    png(filename, width=width, height=height, units = "in", res=300)
+    grid::grid.newpage()
+    grid::grid.draw(x$gtable)
+    dev.off()
+  }
+  else if(grepl(".pdf",filename)){
+    pdf(filename, width=width, height=height)
+    grid::grid.newpage()
+    grid::grid.draw(x$gtable)
+    dev.off()
+  }
+  else{
+    print("Filename did not contain '.png' or '.pdf'")
+  }
+}
 
 view_res_table <- function(de_res, direction=NULL) {
   # get data
@@ -283,8 +316,15 @@ view_res_table <- function(de_res, direction=NULL) {
   if(!is.null(direction)) {
     if (tolower(direction) == "up") res <- res[res$log2FoldChange > 1,]
     else res <- res[res$log2FoldChange < -1,]
-  }
+  } else res <- res[abs(res$log2FoldChange) > 1,]
   return(res[res$padj <= 0.05,])
+}
+
+# save df as png
+df_png <- function(df, save_name="x.png", row_width=50, col_width=200) {
+  png(save_name, height = row_width*nrow(df), width = col_width*ncol(df))
+  grid.table(df)
+  dev.off()
 }
 
 # 5. Pathway Enrichment (GSEA with MSigDB Hallmark sets)
@@ -314,4 +354,124 @@ pathway_enrichment <- function(de_res, species = "human", category = "H") {
   
   return(gseaRes@result)
 }
+
+# PNG printer pipeline
+printer_analysis <- function(de_res, 
+                             title="analysis", 
+                             do_pathway=TRUE, 
+                             extra_info=NULL, 
+                             species="human") {
+  dir.create(title, showWarnings = FALSE)
+  metadata <- de_res$dds@colData %>% as.data.frame()
+  matrisome_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
+  if(species == "mouse") matrisome_genes <- to_mouse_case(matrisome_genes)
+   
+  ### Slide 1: Title
+  title_slide <- function(title) {
+    grid.newpage()
+    grid.text(title, gp = gpar(fontsize = 24, fontface = "bold"))
+  }
+  
+  ### Slide 2: Extra Info (Adding text to slide)
+  text <- function(text) {
+    grid.newpage()
+    grid.text(text, x = 0.05, y = 0.95, just = c("left", "top"),
+              gp = gpar(fontsize = 12))
+  }
+  
+  ### Slide 3+: Heading Slide
+  add_heading_slide <- function(main_title, subtitle) {
+    grid.newpage()
+    grid.text(main_title, y = 0.65, gp = gpar(fontsize = 20, fontface = "bold"))
+    grid.text(subtitle, y = 0.45, gp = gpar(fontsize = 14))
+  }
+  
+  ### Slide 3: metadata
+  df_png(metadata, paste0(title, "/metadata.png"), col_width = 200)
+  
+  ### Slide 3: PCA
+  visualise_pca(de_res, plot=FALSE, save=TRUE, save_name=paste0(title, "/pca.png")) # saved as pca.png
+  
+  ### Slide 4: Volcano
+  visualise_volcano(de_res, plot=FALSE, save=TRUE, save_name=paste0(title, "/volcano.png")) # saved as volcano.png
+  
+  ### Slide 5: Significant Genes
+  significant_genes <- view_res_table(de_res) %>% dplyr::slice(1:15)
+  df_png(significant_genes, save_name=paste0(title, "/significant_genes.png"), col_width = 110)
+  
+  ### Slide 6: Heatmap matrisome
+  visualise_heatmap(de_res, save=TRUE, proteins=matrisome_genes, save_name=paste0(title, "/heatmap_matrisome.png"))
+  
+  ### Slide 7: Heatmap significant
+  visualise_heatmap(de_res, save=TRUE, save_name=paste0(title, "/heatmap_significant.png"))
+  
+  ### Slide 8: Pathway (as required)
+  if (do_pathway) {
+    pathways <- pathway_enrichment(de_res)$ID %>% paste0(collapse = "\n")
+  }
+  
+  # Load in data
+  slide_files <- c(
+    "metadata.png",
+    "pca.png",
+    "volcano.png",
+    "significant_genes.png",
+    "heatmap_matrisome.png",
+    "heatmap_significant.png"
+  )
+  slide_files <- file.path(title, slide_files)
+  
+  
+  # Create the PDF!
+  pdf(file = paste0(title, ".pdf"), width = 8, height = 6)
+  
+  ## Slide 1: Title
+  title_slide(title)
+  
+  ## Slide 2: Extra Info
+  if (!is.null(extra_info) && nzchar(extra_info)) {
+    text(extra_info)
+  }
+  
+  
+  # Slide 3+: Annotated image slides
+  slide_titles <- c(
+    "Metadata Table",
+    "PCA Plot",
+    "Volcano Plot",
+    "Top 15 Significant Genes",
+    "Heatmap: Matrisome Genes",
+    "Heatmap: All Significant Genes"
+  )
+  
+  for (i in seq_along(slide_files)) {
+    # Add heading slide
+    add_heading_slide(title, slide_titles[i])
+    
+    # Then plot
+    img <- readPNG(slide_files[i])
+    grid.newpage()
+    grid.draw(rasterGrob(img, width = unit(1, "npc"), height = unit(1, "npc")))
+  }
+  if (do_pathway) {
+    add_heading_slide(title, "Pathway Analysis")
+    text(pathways)
+  }
+  
+  dev.off()
+}
+
+# Find commonly upregulated and downregulated genes
+common_genes <- function(res_vector, direction="up") {
+  genes <- c("s")
+  for (i in seq_along(res_vector)) {
+    res_genes <- view_res_table(res_vector[i], direction)$gene_name
+    res_genes <- res_genes[!is.na(res_genes)] %>% toupper()
+    genes <- append(genes, res_genes)
+  }
+  gene_counts <- table(genes)
+  common <- gene_counts[gene_counts > 1]
+  return(sort(common, decreasing = TRUE))
+}
+
 
