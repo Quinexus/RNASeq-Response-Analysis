@@ -17,6 +17,8 @@ library(gridExtra)
 library(png)
 library(enrichplot)
 library(Orthology.eg.db)
+library(sva)
+library(qpdf)
 
 # To mouse case
 # Required if using homologene mapping
@@ -427,7 +429,11 @@ pathway_enrichment <- function(de_res, species = "human", category = "H") {
 
 visualise_pathways <- function(de_res, species="human", plot=TRUE, save=FALSE, save_name="pathways.png") { 
  pathways <- pathway_enrichment(de_res, species)
- pathways_dotplot <- dotplot(pathways)
+ pathways_dotplot <- dotplot(pathways,
+                             x = "GeneRatio",
+                             color = "p.adjust",
+                             size = "NES"
+                            )
  
  if(plot) plot(pathways_dotplot)
  if(save) ggsave(save_name, pathways_dotplot)
@@ -439,7 +445,11 @@ printer_analysis <- function(de_res,
                              do_pathway=TRUE, 
                              extra_info=NULL, 
                              species="human") {
-  dir.create(title, showWarnings = FALSE)
+  base_dir <- "printer_analyses/"
+  if (!dir.exists(base_dir)) dir.create(base_dir, recursive = TRUE)
+  dir.create(paste0(base_dir, title), showWarnings = FALSE)
+  file_path <- paste0(base_dir, title)
+  
   metadata <- de_res$dds@colData %>% as.data.frame()
   matrisome_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
   if(species == "mouse") matrisome_genes <- to_mouse_case(matrisome_genes, method = "tomouse", source = "annodbi")
@@ -465,27 +475,27 @@ printer_analysis <- function(de_res,
   }
   
   ### Slide 3: metadata
-  df_png(metadata, paste0(title, "/metadata.png"), col_width = 200)
+  df_png(metadata, paste0(file_path, "/metadata.png"), col_width = 200)
   
   ### Slide 3: PCA
-  visualise_pca(de_res, plot=FALSE, save=TRUE, save_name=paste0(title, "/pca.png")) # saved as pca.png
+  visualise_pca(de_res, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/pca.png")) # saved as pca.png
   
   ### Slide 4: Volcano
-  visualise_volcano(de_res, plot=FALSE, save=TRUE, save_name=paste0(title, "/volcano.png")) # saved as volcano.png
+  visualise_volcano(de_res, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/volcano.png")) # saved as volcano.png
   
   ### Slide 5: Significant Genes
   significant_genes <- view_res_table(de_res) %>% dplyr::slice(1:15)
-  df_png(significant_genes, save_name=paste0(title, "/significant_genes.png"), col_width = 110)
+  df_png(significant_genes, save_name=paste0(file_path, "/significant_genes.png"), col_width = 110)
   
   ### Slide 6: Heatmap matrisome
-  visualise_heatmap(de_res, save=TRUE, proteins=matrisome_genes, save_name=paste0(title, "/heatmap_matrisome.png"), plot=FALSE)
+  visualise_heatmap(de_res, save=TRUE, proteins=matrisome_genes, save_name=paste0(file_path, "/heatmap_matrisome.png"), plot=FALSE)
   
   ### Slide 7: Heatmap significant
-  visualise_heatmap(de_res, save=TRUE, save_name=paste0(title, "/heatmap_significant.png"), plot=FALSE)
+  visualise_heatmap(de_res, save=TRUE, save_name=paste0(file_path, "/heatmap_significant.png"), plot=FALSE)
   
   ### Slide 8: Pathway (as required)
   if (do_pathway) {
-    visualise_pathways(de_res, species=species, plot=FALSE, save=TRUE, save_name=paste0(title, "/pathways.png"))
+    visualise_pathways(de_res, species=species, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/pathways.png"))
   }
   
   # Load in data
@@ -498,11 +508,11 @@ printer_analysis <- function(de_res,
     "heatmap_significant.png"
   )
   if(do_pathway) slide_files <- append(slide_files, "pathways.png")
-  slide_files <- file.path(title, slide_files)
+  slide_files <- file.path(file_path, slide_files)
   
   
   # Create the PDF!
-  pdf(file = paste0(title, ".pdf"), width = 8, height = 6)
+  pdf(file = paste0(file_path, ".pdf"), width = 8, height = 6)
   
   ## Slide 1: Title
   title_slide(title)
@@ -534,6 +544,19 @@ printer_analysis <- function(de_res,
     grid.draw(rasterGrob(img, width = unit(1, "npc"), height = unit(1, "npc")))
   }
   dev.off()
+}
+
+# Combine pdfs
+combine_pdfs <- function(pdfs_dir="printer_analyses", output_file="combined.pdf") {
+  pdf_files <- list.files(pdfs_dir, pattern = "\\.pdf$", full.names = TRUE)
+  if (length(pdf_files) > 0) {
+    # Combine PDFs using qpdf
+    pdf_combine(input = pdf_files, output = output_file)
+    
+    cat("PDFs combined successfully into:", output_file, "\n")
+  } else {
+    cat("No PDF files found in the directory.\n")
+  }
 }
 
 # Find commonly upregulated and downregulated genes
@@ -599,6 +622,7 @@ merge_human_datasets <- function(datasets_vector, annotation="annodbi") {
     
     merged_metadata <- if (is.null(merged_metadata)) metadata else rbind(merged_metadata, metadata)
   }
+  
 
   # 6. Run DESeq2 on merged datasets
   deres_merged <- rna_seq_analysis(merged_counts, merged_metadata, ~batch+response, annotation="annodbi", title="response_responder_vs_nonresponder")
