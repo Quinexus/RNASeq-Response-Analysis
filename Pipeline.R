@@ -102,6 +102,18 @@ load_rna_dataset <- function(counts, metadata, is_txi=FALSE) {
   return(list(counts = counts, metadata = metadata))
 }
 
+check_valid_data <- function(counts, metadata) {
+  print(all(colnames(counts) == rownames(metadata)))
+}
+
+check_and_save <- function(gse, counts, metadata) {
+  if(all(colnames(counts) == rownames(metadata))) {
+    print("TRUE")
+    write.csv(counts, paste0(gse, "/counts.csv"), row.names = TRUE)
+    write.csv(metadata, paste0(gse, "/metadata.csv"), row.names = TRUE)
+  } else print("FALSE!")
+}
+
 # 2. Gene Annotation
 # Using biomart
 biomart_annotation <- function(ensembl_list, species) {
@@ -268,15 +280,17 @@ rna_seq_analysis <- function(counts, metadata, design,
   
   # 1. Load in data
   raw_data <- load_rna_dataset(counts, metadata, is.txi)
+  
   # 2. Prepare dds object
   if(is_formula(design)) design_is_forumla <- TRUE else design_is_forumla <- FALSE
   dds <- prepare_dds(raw_data$counts, raw_data$metadata, design, is.txi, parameter=treatment, use_custom_function = !design_is_forumla)
+  
   # 3. Run deseq2 and annotate
   if(is.null(title)) title <- paste0("group_responder", treatment, "_vs_nonresponder", treatment)
   de_res <- run_deseq(dds, species, annotation, title)
+  
   # 4. Visualise as necessary
-  doPathway <- ifelse(species == "mouse", FALSE, TRUE)
-  if(print) printer_analysis(de_res, do_pathway = doPathway, species = species)
+  if(print) printer_analysis(de_res, species = species)
     
   de_res$species <- species
   # return list of dds, res and title
@@ -340,6 +354,8 @@ visualise_heatmap <- function(de_res, proteins=NULL, plot=TRUE, save=FALSE, save
   if ("treatment" %in% colnames(colData(de_res$dds))) {
     meta_cols <- c(meta_cols, "treatment")
   }
+  if ("batch" %in% colnames(colData(de_res$dds))) meta_cols <- c(meta_cols, "batch")
+  
   df <- as.data.frame(colData(de_res$dds)[, meta_cols, drop = FALSE])
   
   # Reorder columns by response (e.g., responders grouped together)
@@ -442,7 +458,6 @@ visualise_pathways <- function(de_res, species="human", plot=TRUE, save=FALSE, s
 # PNG printer pipeline
 printer_analysis <- function(de_res, 
                              title="analysis", 
-                             do_pathway=TRUE, 
                              extra_info=NULL, 
                              species="human") {
   base_dir <- "printer_analyses/"
@@ -494,9 +509,7 @@ printer_analysis <- function(de_res,
   visualise_heatmap(de_res, save=TRUE, save_name=paste0(file_path, "/heatmap_significant.png"), plot=FALSE)
   
   ### Slide 8: Pathway (as required)
-  if (do_pathway) {
-    visualise_pathways(de_res, species=species, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/pathways.png"))
-  }
+  visualise_pathways(de_res, species=species, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/pathways.png"))
   
   # Load in data
   slide_files <- c(
@@ -505,9 +518,9 @@ printer_analysis <- function(de_res,
     "volcano.png",
     "significant_genes.png",
     "heatmap_matrisome.png",
-    "heatmap_significant.png"
+    "heatmap_significant.png",
+    "pathways.png"
   )
-  if(do_pathway) slide_files <- append(slide_files, "pathways.png")
   slide_files <- file.path(file_path, slide_files)
   
   
@@ -530,9 +543,9 @@ printer_analysis <- function(de_res,
     "Volcano Plot",
     "Top 15 Significant Genes",
     "Heatmap: Matrisome Genes",
-    "Heatmap: All Significant Genes"
+    "Heatmap: All Significant Genes",
+    "Dotplot Pathways"
   )
-  if(do_pathway) slide_titles <- append(slide_titles, "Dotplot Pathways")
   
   for (i in seq_along(slide_files)) {
     # Add heading slide
@@ -575,15 +588,15 @@ common_genes <- function(res_vector, direction="up") {
 
 # datasets vector format
 # c(batch_name, counts_matrix=NULL, metadata=NULL, de_res = NULL)
-merge_human_datasets <- function(datasets_vector, annotation="annodbi") {
+merge_datasets <- function(datasets_vector, species="human", annotation="annodbi") {
   merged_counts <- NULL
   merged_metadata <- NULL
   
   for (i in seq_along(datasets_vector)) {
     # 1. Load dataset
     title <- datasets_vector[[i]]$title
-    if(!is.null(datasets_vector[[i]]$deres.dds)) {
-      deres <- datasets_vector[[i]]$deres.dds
+    if(!is.null(datasets_vector[[i]]$deres)) {
+      deres <- datasets_vector[[i]]$deres$dds
       counts_matrix <- assay(deres)  # stays as matrix
       metadata <- as.data.frame(colData(deres))
     } else {
@@ -592,7 +605,7 @@ merge_human_datasets <- function(datasets_vector, annotation="annodbi") {
     }
 
     # 2. Reverse annotation
-    counts_matrix <- reverse_annotate(counts_matrix, annotation)
+    counts_matrix <- reverse_annotate(counts_matrix, species, annotation)
     
     # 3. Filter lowly expressed genes
     keep <- rowSums(counts_matrix >= 10) >= 3
@@ -625,26 +638,28 @@ merge_human_datasets <- function(datasets_vector, annotation="annodbi") {
   
 
   # 6. Run DESeq2 on merged datasets
-  deres_merged <- rna_seq_analysis(merged_counts, merged_metadata, ~batch+response, annotation="annodbi", title="response_responder_vs_nonresponder")
+  deres_merged <- rna_seq_analysis(merged_counts, merged_metadata, ~batch+response, annotation="annodbi", title="response_responder_vs_nonresponder", species = species)
   
   return(deres_merged)
 }
 
-reverse_annotate <- function(counts_matrix, method) {
+reverse_annotate <- function(counts_matrix, species, method) {
   # Ensure input is a matrix
   if (!is.matrix(counts_matrix)) {
     counts_matrix <- as.matrix(counts_matrix)
   }
   
   # If Ensembl IDs with version are present
-  if (grepl("^ENSG", rownames(counts_matrix)[1])) {
+  if (grepl("^ENS", rownames(counts_matrix)[1])) {
     ids <- sub("\\..*", "", rownames(counts_matrix))  # strip versions
     counts_matrix <- rowsum(counts_matrix, group = ids)  # collapse duplicates
   } else {
     ids <- rownames(counts_matrix)
     
     if (method == "biomart") {
-      ensembl <- biomaRt::useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+      if(species == "human") ensembl <- biomaRt::useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+      else ensembl <- biomaRt::useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+      
       attributes <- c("external_gene_name", "ensembl_gene_id")
       
       ensembl_names <- biomaRt::getBM(
@@ -657,7 +672,8 @@ reverse_annotate <- function(counts_matrix, method) {
       ensembl_names <- ensembl_names[!duplicated(ensembl_names$external_gene_name), ]
       matched_ids <- ensembl_names$ensembl_gene_id[match(ids, ensembl_names$external_gene_name)]
     } else {
-      orgdb <- org.Hs.eg.db::org.Hs.eg.db
+      if(species == "human") orgdb <- org.Hs.eg.db
+      else orgdb <- org.Mm.eg.db
       
       annotations_orgDb <- AnnotationDbi::select(
         orgdb,
@@ -686,5 +702,29 @@ reverse_annotate <- function(counts_matrix, method) {
   return(counts_matrix)
 }
 
+read_GEO_matrix_file <- function(location) {
+  lines <- readLines(location)
+  empty_line_index <- which(lines=="")[1]
+  df <- read.delim(location, skip=empty_line_index, row.names = NULL) %>% t() %>% as.data.frame()
+  colnames(df) <- df[1, ] %>% as.character() %>% make.unique()
+  colnames(df) <- sub("^!", "", colnames(df))
+  required_columns <- colnames(df) %>% grepl("Sample_geo_accession|Sample_characteristics", .)
   
+  df <- df[-1,] %>% select(colnames(df)[required_columns])
+
+  return(df)
+}
+
+determine_annotation_status <- function(genes, annotation_method="annodbi") {
+  if(all(grepl("^ENS|ERCC", genes))) {
+    return(annotation_method)
+  } else if(is.numeric(genes)) {
+    return("number")
+  } else {
+    return("none")
+  }
+}
+
+
+
   
