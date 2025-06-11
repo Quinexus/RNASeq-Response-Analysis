@@ -19,6 +19,7 @@ library(enrichplot)
 library(Orthology.eg.db)
 library(sva)
 library(qpdf)
+library(xCell)
 
 # ---- 1. Load all packages  ----
 load_rna_dataset <- function(counts, metadata) {
@@ -198,7 +199,7 @@ annotate_df <- function(df, method, species) {
   return(merged_df)
 }
 
-# ---- The Analysis Pipeline  ----
+# ---- The Analysis Pipeline ----
 response_analysis <- function(name, counts, metadata, species="human", annotation="biomart") {
   # 1. load in data
   raw_data <- load_rna_dataset(counts, metadata)
@@ -359,7 +360,9 @@ df_png <- function(df, save_name="x.png", row_width=50, col_width=200) {
 
 
 # ---- 6. Pathway Enrichment ----
-pathway_enrichment <- function(deres, species = "human", category = "H") {
+pathway_enrichment <- function(deres, view_all = TRUE, category = "H", subset = NULL) {
+  species <- deres$species
+  
   # get DESeq2 results
   res <- deres$res
   # remove NAs
@@ -367,33 +370,61 @@ pathway_enrichment <- function(deres, species = "human", category = "H") {
   # remove duplicates (keep highest stat per gene)
   res <- res[!duplicated(res$gene_name), ]
   
-  # Create ranked gene list
+  # create ranked gene list
   geneList <- res$stat
   names(geneList) <- res$gene_name
   geneList <- sort(geneList, decreasing = TRUE)
   
-  # For enricher
-  sig_genes <- res$gene_name[res$padj < 0.05 & abs(res$log2FoldChange) > 1]
-  
-  # Get MSigDB hallmark gene sets
+  # get MSigDB hallmark gene sets
   msigdb_sets <- msigdbr(species = species, collection = category)
+  if (!is.null(subset)) msigdb_sets <- msigdb_sets[msigdb_sets$gs_name %in% subset, ]
+  
   msigdbr_t2g <- dplyr::distinct(msigdb_sets, gs_name, gene_symbol)
   
-  # Run enricher
-  gseaRes <- GSEA(geneList, TERM2GENE = msigdbr_t2g, pvalueCutoff = 1)
+  # set p-value cutoff depending on view_all
+  pcut <- ifelse(view_all, 1, 0.05)
+  
+  # run GSEA
+  gseaRes <- GSEA(geneList, TERM2GENE = msigdbr_t2g, pvalueCutoff = pcut)
 
   return(gseaRes)
 }
 
-dotplot_pathways <- function(deres, plot=TRUE, save=FALSE, save_name=NULL) { 
-  pathways <- pathway_enrichment(deres, deres$species)
-  pathways_dotplot <- dotplot(pathways, x = "GeneRatio",
+dotplot_pathways <- function(gseaRes, plot=TRUE, save=FALSE, save_name=NULL) { 
+  pathways_dotplot <- dotplot(gseaRes, x = "GeneRatio",
                               color = "NES", size = "p.adjust")
   
   plot_or_save(pathways_dotplot, deres, plot, save, save_name, "pathways")
 }
 
 # ---- 7. Bulk Deconvolution  ----
+xCell_deconvolution <- function(deres, species = "human", annotation_method = "annodbi") {
+  # VST-normalized expression matrix
+  vsd <- vst(deres$dds, blind = TRUE)
+  expr_matrix <- assay(vsd)
+  
+  # Annotate gene IDs to symbols
+  annotated_expr <- annotate_df(as.data.frame(expr_matrix), method = annotation_method, species = species)
+  
+  # Drop rows with missing symbols
+  annotated_expr <- annotated_expr[!is.na(annotated_expr$gene_name), ]
+  
+  # Collapse to one row per gene symbol (xCell needs unique symbols)
+  expr_by_symbol <- annotated_expr %>%
+    group_by(gene_name) %>%
+    summarise(across(where(is.numeric), max)) %>%
+    column_to_rownames("gene_name") %>%
+    as.matrix()
+  
+  # Run xCell analysis
+  xcell_scores <- xCell::xCellAnalysis(expr_by_symbol)
+  
+  return(xcell_scores)
+}
+
+heatmap_deconvolution <- function(est_obj) {
+  
+}
 
 # ---- 8. Printer Analysis  ----
 printer_analysis <- function(deres, extra_info=NULL) {
@@ -418,6 +449,13 @@ printer_analysis <- function(deres, extra_info=NULL) {
   } else {
     matrisome_genes <- matrisome_file$GeneSymbol
   }
+  
+  # naba pathways
+  naba_pathways <- c(
+    "NABA_MATRISOME", "NABA_ECM_REGULATORS", "NABA_ECM_GLYCOPROTEINS",
+    "NABA_COLLAGENS", "NABA_PROTEOGLYCANS", "NABA_ECM_AFFILIATED",
+    "NABA_CORE_MATRISOME", "NABA_MATRISOME_ASSOCIATED", "NABA_SECRETED_FACTORS"
+  )
   
   ### Slide 1: Title
   title_slide <- function(title) {
@@ -466,8 +504,18 @@ printer_analysis <- function(deres, extra_info=NULL) {
     plot_significant <- TRUE
   } else plot_significant <- FALSE
   
-  ### Slide 9: Pathways
-  #visualise_pathways(deres, species=species, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/pathways.png"))
+  
+  ### Slide 10+: Pathways
+  # GSEA hallmark
+  gseaRes <- pathway_enrichment(deres, view_all = FALSE)
+  dotplot_pathways(gseaRes, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_hallmark.png"))
+  
+  # GSEA naba
+  gseaResNaba <- pathway_enrichment(deres, view_all = TRUE, category = "C2", subset = naba_pathways)
+  dotplot_pathways(gseaResNaba, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_naba.png"))
+  
+  ### Slide 12+: Immunodeconvolution
+  if(deres$species == "human")
   
   # Load in data
   slide_files <- c(
@@ -479,6 +527,7 @@ printer_analysis <- function(deres, extra_info=NULL) {
   )
   if (plot_significant) slide_files <- c(slide_files, "significant_genes.png",
                                          "heatmap_significant.png")
+  slide_files <- c(slide_files, "dotplot_hallmark.png", "dotplot_naba.png")
   slide_files <- file.path(file_path, slide_files)
   
   
@@ -504,6 +553,7 @@ printer_analysis <- function(deres, extra_info=NULL) {
   )
   if (plot_significant) slide_titles <- c(slide_titles, "Top 15 Significant Genes",
                                           "Heatmap: All Significant Genes")
+  slide_titles <- c(slide_titles, "Dotplot: Hallmark Pathways", "Dotplot: Matrisome Pathways")
   
   for (i in seq_along(slide_files)) {
     # Add heading slide
@@ -519,6 +569,20 @@ printer_analysis <- function(deres, extra_info=NULL) {
   message(paste0("Completed ", deres$name))
 }
 
+# combine pdfs
+combine_pdfs <- function(pdfs_dir="printer_analyses", output_file="combined.pdf") {
+  pdf_files <- list.files(pdfs_dir, pattern = "\\.pdf$", full.names = TRUE)
+  if (length(pdf_files) > 0) {
+    # Combine PDFs using qpdf
+    pdf_combine(input = pdf_files, output = output_file)
+    
+    cat("PDFs combined successfully into:", output_file, "\n")
+  } else {
+    cat("No PDF files found in the directory.\n")
+  }
+}
+
+# perform printer analyses for all datasets in list
 recursive_printer <- function(deres_list) {
   for (i in seq_along(deres_list)) printer_analysis(deres_list[[i]])
 }
@@ -534,7 +598,7 @@ list_analyse_print <- function(datasets_list) {
   return(deres_list)
 }
 
-matrisome_combined <- function(deres_list) {
+matrisome_combined <- function(deres_list, genes = "index") {
   merged_res_list <- list()
   
   for (i in seq_along(deres_list)) {
@@ -549,26 +613,40 @@ matrisome_combined <- function(deres_list) {
   }
   
   matrisome_index <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB") %>% to_mouse_case(., source = "annodbi")
+  matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")$GeneSymbol %>% to_mouse_case(., source = "annodbi")
+  
+  if (genes == "index") filter_genes <- matrisome_index
+  else filter_genes <- matrisome_file
   
   combined_res_df <- do.call(rbind, merged_res_list) %>% filter(!is.na(gene_name)) %>%
-    filter(gene_name %in% matrisome_index) %>%
+    filter(gene_name %in% filter_genes) %>%
     mutate(Significance = ifelse(is.na(padj), "NA", ifelse(padj < 0.05, "< 0.05", "≥ 0.05")))
   
   # Plot
   ggplot(combined_res_df, aes(x = gene_name, y = dataset)) +
     geom_point(aes(size = Significance, color = log2FoldChange)) +
     scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5, "NA" = 1)) + 
-    theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+    scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0)
 }
 
-gsea_combined <- function(deres_list) {
+gsea_combined <- function(deres_list, type = "hallmark") {
   merged_gsea_list <- list()
+  naba_pathways <- c(
+    "NABA_MATRISOME", "NABA_ECM_REGULATORS", "NABA_ECM_GLYCOPROTEINS",
+    "NABA_COLLAGENS", "NABA_PROTEOGLYCANS", "NABA_ECM_AFFILIATED",
+    "NABA_CORE_MATRISOME", "NABA_MATRISOME_ASSOCIATED", "NABA_SECRETED_FACTORS"
+  )
+  
   
   for (i in seq_along(deres_list)) {
     for (j in seq_along(deres_list[[i]])) {
       entry <- deres_list[[i]][[j]]
       if(grepl("_response$", entry$name)) {
-        gsea <- pathway_enrichment(entry, entry$species)@result
+        if (type == "hallmark") gsea <- pathway_enrichment(entry, view_all = TRUE)@result
+        else if (type == "naba") gsea <- pathway_enrichment(entry, view_all = TRUE,
+                                                            category = "C2", 
+                                                            subset = naba_pathways)@result
         gsea$dataset <- gsub("_response$", "", entry$name)
         merged_gsea_list[[entry$name]] <- gsea
       }
@@ -576,12 +654,32 @@ gsea_combined <- function(deres_list) {
   }
   
   combined_gsea_df <- do.call(rbind, merged_gsea_list) %>% 
-    mutate(Significance = ifelse(p.adjust < 0.05, "< 0.05", "≥ 0.05"))
+    mutate(significance = ifelse(p.adjust < 0.05, "< 0.05", "≥ 0.05"))
   
   ggplot(combined_gsea_df, aes(x = ID, y = dataset)) +
-    geom_point(aes(size = Significance, color = NES)) +
-    scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5)) + 
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    geom_point(aes(size = significance, color = NES)) + 
+    scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0)
+}
+
+# find commonly upregulated and downregulated genes
+common_genes <- function(deres_list, direction="up") {
+  genes <- c("s")
+  for (i in seq_along(deres_list)) {
+    for (j in seq_along(deres_list[[i]])) {
+      entry <- deres_list[[i]][[j]]
+      if(grepl("_response$", entry$name)) {
+        res_genes <- view_res_table(entry, direction)$gene_name
+        if(entry$species == "mouse") res_genes <- to_mouse_case(res_genes, "tohuman", "annodbi")
+        res_genes <- res_genes[!is.na(res_genes)]
+        genes <- c(genes, res_genes)
+      }
+    }
+  }
+  gene_counts <- table(genes)
+  common <- gene_counts[gene_counts > 5]
+  return(sort(common, decreasing = TRUE))
 }
 
 # ---- 10. Other Useful Functions  ----
@@ -647,36 +745,6 @@ to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
     stop("Invalid source. Use biomart or annodbi")
   }
 }
-
-# Combine pdfs
-combine_pdfs <- function(pdfs_dir="printer_analyses", output_file="combined.pdf") {
-  pdf_files <- list.files(pdfs_dir, pattern = "\\.pdf$", full.names = TRUE)
-  if (length(pdf_files) > 0) {
-    # Combine PDFs using qpdf
-    pdf_combine(input = pdf_files, output = output_file)
-    
-    cat("PDFs combined successfully into:", output_file, "\n")
-  } else {
-    cat("No PDF files found in the directory.\n")
-  }
-}
-
-
-# Find commonly upregulated and downregulated genes
-common_genes <- function(res_vector, direction="up") {
-  genes <- c("s")
-  for (i in seq_along(res_vector)) {
-    res_genes <- view_res_table(res_vector[[i]], direction)$gene_name
-    if(res_vector[[i]]$species == "mouse") res_genes <- to_mouse_case(res_genes, "tohuman", "annodbi")
-    res_genes <- res_genes[!is.na(res_genes)]
-    genes <- append(genes, res_genes)
-  }
-  gene_counts <- table(genes)
-  common <- gene_counts[gene_counts > 1]
-  return(sort(common, decreasing = TRUE))
-}
-
-
 
 # datasets vector format
 # c(batch_name, counts_matrix=NULL, metadata=NULL, de_res = NULL)
