@@ -12,6 +12,7 @@ library(pheatmap)
 library(clusterProfiler)
 library(msigdbr)
 library(tidyverse)
+library(ggpubr)
 library(grid)
 library(gridExtra)
 library(png)
@@ -282,6 +283,9 @@ visualise_heatmap <- function(deres, proteins=NULL, plot=TRUE, save=FALSE, save_
   if (is.null(proteins)) res <- res[res$padj < 0.05 & abs(res$log2FoldChange) > 1, ]
   else res <- res[res$gene_name %in% proteins & !is.na(res$gene_name), ]
   
+  # sort res and take top 50 only
+  res <- res[order(res$log2FoldChange),] %>% slice(1:50)
+  
   # remove na and duplicates
   res <- res[!is.na(res$gene_name), ]
   res <- res[rownames(res) %in% rownames(vsd), ]
@@ -426,7 +430,91 @@ heatmap_deconvolution <- function(est_obj) {
   
 }
 
-# ---- 8. Printer Analysis  ----
+# ---- 8. Other Analyses  ----
+matrisome_index <- function(deres) {
+  # get normalised counts
+  norm_counts <- counts(deres$dds, normalized=TRUE)
+  # sum of counts per sample
+  lib_sizes <- colSums(norm_counts)
+  # calculate counts per million
+  cpm <- sweep(norm_counts, 2, lib_sizes, FUN = "/") * 1e6
+  # log2 transform
+  log2_cpm <- log2(cpm + 1)
+  # annotated df
+  annotated_log2_cpm_df <- annotate_df(as.data.frame(log2_cpm), "annodbi", deres$species)
+  
+  # genes
+  positive_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1")
+  negative_genes <- c("AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
+  if(deres$species == "mouse") {
+    positive_genes <- positive_genes %>% to_mouse_case(., "tomouse", "annodbi")
+    negative_genes <- negative_genes %>% to_mouse_case(., "tomouse", "annodbi")
+  }
+  
+  pos_ids <- rownames(annotated_log2_cpm_df)[annotated_log2_cpm_df$gene_name %in% positive_genes]
+  neg_ids <- rownames(annotated_log2_cpm_df)[annotated_log2_cpm_df$gene_name %in% negative_genes]
+  
+  avg_pos <- colMeans(log2_cpm[pos_ids, , drop = FALSE])
+  avg_neg <- colMeans(log2_cpm[neg_ids, , drop = FALSE])
+  
+  matrix_index <- avg_pos / avg_neg
+  
+  return(matrix_index)
+}
+
+sample_index <- function(deres, plot=TRUE, save=FALSE, save_name=NULL) {
+  matrix_index <- matrisome_index(deres)
+  
+  metadata <- deres$dds %>% colData() %>% as.data.frame()
+  metadata$index <- matrix_index[rownames(metadata)]
+  
+  if (any(grepl("^group$", colnames(metadata)))) {
+    metadata <- metadata[order(metadata$group, metadata$index), ]
+    metadata$sample <- factor(rownames(metadata), levels = rownames(metadata))
+    fill <- metadata$group
+    
+  }
+  else {
+    metadata <- metadata[order(metadata$response, metadata$index), ]
+    metadata$sample <- factor(rownames(metadata), levels = rownames(metadata))
+    fill <- metadata$response
+  }
+    
+  sample_index_plot <- ggplot(metadata, aes(x = sample, y = index, color = fill)) +
+    geom_point(size = 3) +
+    labs(title = "Matrix Index per Sample",
+         x = "Sample",
+         y = "Matrix Index",
+         color = "Response") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black") + 
+    scale_y_continuous(limits = c(0.25, 1.75)) + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+  
+  plot_or_save(sample_index_plot, deres, plot, save, save_name, "sample_index")
+}
+
+boxplot_index <- function(deres, plot=TRUE, save=FALSE, save_name=NULL) {
+  matrix_index <- matrisome_index(deres)
+  
+  metadata <- deres$dds %>% colData() %>% as.data.frame()
+  metadata$index <- matrix_index[rownames(metadata)]
+  
+  if (any(grepl("^group$", colnames(metadata)))) x <- metadata$group
+  else x <- metadata$response
+  
+  index_boxplot <- ggplot(metadata, aes(x=x, y=index, fill=response)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.2) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black") + 
+    scale_y_continuous(limits = c(0.25, 1.75)) + 
+    labs(title = "Matrix Index by Response Group") + 
+    stat_compare_means()
+  
+  plot_or_save(index_boxplot, deres, plot, save, save_name, "boxplot_index")
+}
+
+
+# ---- 9. Printer Analysis  ----
 printer_analysis <- function(deres, extra_info=NULL) {
   # get title
   title <- deres$name
@@ -514,8 +602,9 @@ printer_analysis <- function(deres, extra_info=NULL) {
   gseaResNaba <- pathway_enrichment(deres, view_all = TRUE, category = "C2", subset = naba_pathways)
   dotplot_pathways(gseaResNaba, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_naba.png"))
   
-  ### Slide 12+: Immunodeconvolution
-  if(deres$species == "human")
+  ### Slide 12+: Matrix Index
+  sample_index(deres, plot = FALSE, save = TRUE, save_name = paste0(file_path, "/sample_index.png"))
+  boxplot_index(deres, plot = FALSE, save = TRUE, save_name = paste0(file_path, "/boxplot_index.png"))
   
   # Load in data
   slide_files <- c(
@@ -527,9 +616,8 @@ printer_analysis <- function(deres, extra_info=NULL) {
   )
   if (plot_significant) slide_files <- c(slide_files, "significant_genes.png",
                                          "heatmap_significant.png")
-  slide_files <- c(slide_files, "dotplot_hallmark.png", "dotplot_naba.png")
+  slide_files <- c(slide_files, "dotplot_hallmark.png", "dotplot_naba.png", "sample_index.png", "boxplot_index.png")
   slide_files <- file.path(file_path, slide_files)
-  
   
   # Create the PDF!
   pdf(file = paste0(file_path, ".pdf"), width = 8, height = 6)
@@ -553,7 +641,9 @@ printer_analysis <- function(deres, extra_info=NULL) {
   )
   if (plot_significant) slide_titles <- c(slide_titles, "Top 15 Significant Genes",
                                           "Heatmap: All Significant Genes")
-  slide_titles <- c(slide_titles, "Dotplot: Hallmark Pathways", "Dotplot: Matrisome Pathways")
+  slide_titles <- c(slide_titles, 
+                    "Dotplot: Hallmark Pathways", "Dotplot: Matrisome Pathways",
+                    "Matrisome Index: Between Samples", "Matrisome Index: Between Response")
   
   for (i in seq_along(slide_files)) {
     # Add heading slide
@@ -587,7 +677,7 @@ recursive_printer <- function(deres_list) {
   for (i in seq_along(deres_list)) printer_analysis(deres_list[[i]])
 }
 
-# ---- 9. Combination Analysis  ----
+# ---- 10. Combination Analysis  ----
 list_analyse_print <- function(datasets_list) {
   deres_list <- lapply(datasets_list, function(dataset) {
     deres <- response_analysis(dataset$name, dataset$counts, dataset$metadata, dataset$species, "annodbi")
@@ -613,13 +703,13 @@ matrisome_combined <- function(deres_list, genes = "index") {
   }
   
   matrisome_index <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB") %>% to_mouse_case(., source = "annodbi")
-  matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")$GeneSymbol %>% to_mouse_case(., source = "annodbi")
+  #matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")$GeneSymbol %>% to_mouse_case(., source = "annodbi")
   
-  if (genes == "index") filter_genes <- matrisome_index
-  else filter_genes <- matrisome_file
+  #if (genes == "index") filter_genes <- matrisome_index
+  #else filter_genes <- matrisome_file
   
   combined_res_df <- do.call(rbind, merged_res_list) %>% filter(!is.na(gene_name)) %>%
-    filter(gene_name %in% filter_genes) %>%
+    filter(gene_name %in% matrisome_index) %>%
     mutate(Significance = ifelse(is.na(padj), "NA", ifelse(padj < 0.05, "< 0.05", "≥ 0.05")))
   
   # Plot
@@ -642,7 +732,7 @@ gsea_combined <- function(deres_list, type = "hallmark") {
   for (i in seq_along(deres_list)) {
     for (j in seq_along(deres_list[[i]])) {
       entry <- deres_list[[i]][[j]]
-      if(grepl("_response$", entry$name)) {
+      if(grepl("_untreated$", entry$name)) {
         if (type == "hallmark") gsea <- pathway_enrichment(entry, view_all = TRUE)@result
         else if (type == "naba") gsea <- pathway_enrichment(entry, view_all = TRUE,
                                                             category = "C2", 
@@ -682,7 +772,7 @@ common_genes <- function(deres_list, direction="up") {
   return(sort(common, decreasing = TRUE))
 }
 
-# ---- 10. Other Useful Functions  ----
+# ---- 11. Other Useful Functions  ----
 # To mouse case
 # Required if using homologene mapping
 to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
@@ -745,6 +835,30 @@ to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
     stop("Invalid source. Use biomart or annodbi")
   }
 }
+
+check_valid_data <- function(counts, metadata) {
+  print(all(colnames(counts) == rownames(metadata)))
+}
+
+save_data <- function(gse, counts, metadata) {
+  write.csv(counts, paste0("bulk/", gse, "/counts.csv"), row.names = TRUE)
+  write.csv(metadata, paste0("bulk/", gse, "/metadata.csv"), row.names = TRUE)
+}
+
+read_GEO_matrix_file <- function(location) {
+  lines <- readLines(location)
+  empty_line_index <- which(lines=="")[1]
+  df <- read.delim(location, skip=empty_line_index, row.names = NULL) %>% t() %>% as.data.frame()
+  colnames(df) <- df[1, ] %>% as.character() %>% make.unique()
+  colnames(df) <- sub("^!", "", colnames(df))
+  required_columns <- colnames(df) %>% grepl("Sample_geo_accession|Sample_characteristics", .)
+  
+  df <- df[-1,] %>% select(colnames(df)[required_columns])
+  
+  return(df)
+}
+
+
 
 # datasets vector format
 # c(batch_name, counts_matrix=NULL, metadata=NULL, de_res = NULL)
@@ -861,20 +975,4 @@ reverse_annotate <- function(counts_matrix, species, method) {
   
   return(counts_matrix)
 }
-
-read_GEO_matrix_file <- function(location) {
-  lines <- readLines(location)
-  empty_line_index <- which(lines=="")[1]
-  df <- read.delim(location, skip=empty_line_index, row.names = NULL) %>% t() %>% as.data.frame()
-  colnames(df) <- df[1, ] %>% as.character() %>% make.unique()
-  colnames(df) <- sub("^!", "", colnames(df))
-  required_columns <- colnames(df) %>% grepl("Sample_geo_accession|Sample_characteristics", .)
-  
-  df <- df[-1,] %>% select(colnames(df)[required_columns])
-
-  return(df)
-}
-
-
-
   
