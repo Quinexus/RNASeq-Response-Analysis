@@ -1,28 +1,57 @@
 # RNA Seq Pipeline Useful Functions
 
-# Load in required packages
-library(DESeq2)
+# ----- Load all packages  ----
+
+# annotation
 library(biomaRt)
 library(AnnotationDbi)
 library(org.Hs.eg.db)
 library(org.Mm.eg.db)
-library(SummarizedExperiment)
-library(EnhancedVolcano)
-library(pheatmap)
-library(clusterProfiler)
+library(Orthology.eg.db)
 library(msigdbr)
+
+# Differential Expression
+library(DESeq2)
+
+# pathway analysis
+library(clusterProfiler)
+
+# deconvolution Packages
+library(xCell)
+library(EPIC)
+#library(MCPcounter)
+library(Decosus)
+
+# batch correction
+library(sva)
+
+# data handling
 library(tidyverse)
+library(SummarizedExperiment)
+
+# ggplot
+library(ggh4x)
+library(ggtext)
 library(ggpubr)
+
+# visualisation
+library(pheatmap)
+library(EnhancedVolcano)
+library(enrichplot)
+
+# printer analysis 
 library(grid)
 library(gridExtra)
 library(png)
-library(enrichplot)
-library(Orthology.eg.db)
-library(sva)
 library(qpdf)
-library(xCell)
-library(ggh4x)
-library(ggtext)
+
+# ML packages
+library(caret)
+library(randomForest)
+library(pROC)
+library(FactoMineR)
+library(factoextra)
+library(glmnet)
 
 # ---- 1. Load all datasets  ----
 load_rna_dataset <- function(counts, metadata) {
@@ -154,9 +183,7 @@ annotate_genes <- function(gene_list, method, species) {
     df_input <- data.frame(input_id = ids, original = gene_list)
     df_merged <- merge(df_input, gene_names, by.x = "input_id", by.y = biomart_id_type, all.x = TRUE)
     df_merged$gene_name <- df_merged$external_gene_name
-    
-    # if duplicate mapping exists, keep first
-    df_merged <- df_merged[!duplicated(df_merged$input_id),]
+  
   } else if (method == "annodbi") {
     # get org.db for species
     if(species == "human") orgdb <- org.Hs.eg.db
@@ -200,6 +227,142 @@ annotate_df <- function(df, method, species) {
   merged_df$original <- NULL
   
   return(merged_df)
+}
+
+reverse_human_annotate <- function(counts, method="annodbi") {
+  counts_df <- as.data.frame(counts)
+  ids <- rownames(counts_df)
+  annotation_type <- annotation_status(ids)
+  
+  # handle Ensembl case — already good
+  if (annotation_type == "ensembl") {
+    counts_df$ensembl_id <- sub("\\..*", "", ids)
+    rownames(counts_df) <- counts_df$ensembl_id
+    counts_df$ensembl_id <- NULL
+    return(counts_df)
+  }
+  
+  # prepare variables
+  if (annotation_type == "none") {
+    biomart_id_type <- "external_gene_name"
+    annodbi_keytype <- "SYMBOL"
+  } else if (annotation_type == "entrez") {
+    biomart_id_type <- "entrezgene_id"
+    annodbi_keytype <- "ENTREZID"
+  }
+  
+  # annotation
+  if (method == "biomart") {
+    ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+    attributes <- c(biomart_id_type, "ensembl_gene_id")
+    
+    gene_ids <- getBM(
+      attributes = attributes,
+      filters = biomart_id_type,
+      values = ids,
+      mart = ensembl
+    )
+    
+    df_input <- data.frame(original = ids)
+    df_merged <- merge(df_input, gene_ids, by.x = "original", by.y = biomart_id_type, all.x = TRUE)
+    df_merged <- df_merged[!duplicated(df_merged$original), ]
+    
+  } else if (method == "annodbi") {
+    annotations <- AnnotationDbi::select(
+      org.Hs.eg.db,
+      keys = ids,
+      columns = c("ENSEMBL"),
+      keytype = annodbi_keytype
+    )
+    
+    df_input <- data.frame(original = ids)
+    df_merged <- merge(df_input, annotations, by.x = "original", by.y = annodbi_keytype, all.x = TRUE)
+    df_merged <- df_merged[!duplicated(df_merged$original), ]
+  }
+  
+  # assign Ensembl as rownames
+  counts_df$original <- ids
+  final_df <- dplyr::left_join(counts_df, df_merged, by = "original")
+  
+  ensembl_col <- ifelse("ENSEMBL" %in% colnames(final_df), "ENSEMBL", "ensembl_gene_id")
+  
+  
+  # Step 1: filter out missing Ensembl ID
+  final_df <- final_df[!is.na(final_df[[ensembl_col]]), ]
+  
+  # Step 2: keep only the first occurrence of each Ensembl ID
+  final_df <- final_df[!duplicated(final_df[[ensembl_col]]), ]
+  
+  # Step 3: assign Ensembl ID as rownames
+  rownames(final_df) <- final_df[[ensembl_col]]
+  
+  # Step 4: drop helper columns
+  final_df[[ensembl_col]] <- NULL
+  final_df$original <- NULL
+  return(final_df)
+}
+
+# To mouse case
+# Required if using homologene mapping
+to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
+  if (method == "case") {
+    return(sapply(symbols, function(g) {
+      if (is.na(g) || nchar(g) == 0) return("")
+      first <- substr(g, 1, 1)
+      rest <- tolower(substr(g, 2, nchar(g)))
+      paste0(first, rest)
+    }))
+  }
+  
+  if (!method %in% c("tomouse", "tohuman")) {
+    stop("Invalid method. Use 'case', 'tomouse', or 'tohuman'.")
+  }
+  
+  if (source=="biomart") {
+    human <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
+    mouse <- useEnsembl(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
+    
+    if(method=="tomouse") {
+      genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = symbols, 
+                       mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+      mousex <- unique(genesV2[, 2])
+    } else {
+      genesV2 = getLDS(attributes = c("mgi_symbol"), filters = "mgi_symbol", values = symbols, 
+                       mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
+      humanx <- unique(genesV2[, 2])
+    }
+    return(unname(mapped[symbols])) 
+    
+  } else if (source=="annodbi") {
+    horg <- org.Hs.eg.db
+    morg <- org.Mm.eg.db
+    orth <- Orthology.eg.db
+    if(method=="tomouse") {
+      humang <- mapIds(horg, symbols, "ENTREZID", "SYMBOL") %>% na.omit()
+      
+      mapped <- AnnotationDbi::select(orth, humang, "Mus_musculus", "Homo_sapiens")
+      names(mapped) <- c("Homo_egid", "Mus_egid")
+      musyhb <- AnnotationDbi::select(morg, as.character(mapped[,2]), "SYMBOL", "ENTREZID")
+      return(setNames(musyhb[,2], symbols))
+    } else {
+      mouseg_list <- mapIds(morg, keys = symbols, column = "ENTREZID", keytype = "SYMBOL", multiVals = "list")
+      
+      # Flatten by keeping the first valid mapping per symbol
+      mouseg <- sapply(mouseg_list, function(x) if (length(x) > 0) x[1] else NA)
+      
+      # Now mouseg is a named vector
+      valid_idx <- which(!is.na(mouseg))
+      mouseg <- mouseg[valid_idx]
+      symbols <- symbols[valid_idx]
+      
+      mapped <- AnnotationDbi::select(orth, mouseg, "Homo_sapiens","Mus_musculus")
+      names(mapped) <- c("Mus_egid","Homo_egid")
+      husymb <- AnnotationDbi::select(horg, as.character(mapped[,2]), "SYMBOL","ENTREZID")
+      return(setNames(husymb[,2], symbols))
+    }
+  } else {
+    stop("Invalid source. Use biomart or annodbi")
+  }
 }
 
 # ---- The Analysis Pipeline ----
@@ -446,14 +609,14 @@ custom_pathway_enrichment <- function(deres, view_all = TRUE) {
 }
 
 dotplot_pathways <- function(gseaRes, plot=TRUE, save=FALSE, save_name=NULL) { 
-  pathways_dotplot <- dotplot(gseaRes, x = "GeneRatio",
+  pathways_dotplot <- clusterProfiler::dotplot(gseaRes, x = "GeneRatio",
                               color = "NES", size = "p.adjust")
   
   plot_or_save(pathways_dotplot, deres, plot, save, save_name, "pathways")
 }
 
 # ---- 7. Bulk Deconvolution  ----
-xCell_deconvolution <- function(deres, annotation_method = "annodbi") {
+prepare_deconvolution_matrix <- function(deres, annotation_method = "annodbi") {
   # VST-normalized expression matrix
   vsd <- vst(deres$dds, blind = TRUE)
   expr_matrix <- assay(vsd)
@@ -471,32 +634,80 @@ xCell_deconvolution <- function(deres, annotation_method = "annodbi") {
     column_to_rownames("gene_name") %>%
     as.matrix()
   
-  # Run xCell analysis
-  xcell_scores <- xCell::xCellAnalysis(expr_by_symbol)
+  if (nrow(expr_by_symbol) < 5000) warning("Low number of annotated genes; check annotation or input data.")
   
+  return(expr_by_symbol)
+}
+
+xCell_deconvolution <- function(expr) {
+  xcell_scores <- xCell::xCellAnalysis(expr)
   return(xcell_scores)
 }
 
-deconvolute_significant <- function(deres) {
+epic_deconvolution <- function(expr) {
+  epic_result <- EPIC::EPIC(bulk = expr)
+  return(epic_result$cellFractions)
+}
+
+mcp_deconvolution <- function(expr) {
+  mcp_scores <- MCPcounter::MCPcounter.estimate(
+    expr,
+    featuresType = "HUGO_symbols"
+  )
+  
+  return(mcp_scores)
+}
+
+decosus_deconvolution <- function(expr) {
+  # Ensure no duplicated gene symbols
+  expr <- expr[!duplicated(rownames(expr)), ]
+  
+  # Convert to data.frame if it's a matrix
+  expr_df <- as.data.frame(expr)
+  
+  # Add required hgnc_symbols column
+  expr_df$hgnc_symbols <- rownames(expr_df)
+  
+  decosus_result <- Decosus::cosDeco(x=expr_df, rnaseq = T, plot = TRUE, ext = FALSE)
+  
+  est_Decosus_cells <- decosus_result$main_cells
+  
+  return(est_Decosus_cells %>% as.matrix())
+}
+
+
+
+
+deconvolute_significant <- function(deres, method="xcell") {
+  expr <- prepare_deconvolution_matrix(deres)
+  
   # get scores and metadata
-  xcell_scores <- xCell_deconvolution(deres) %>% as.data.frame()
+  if(method == "xcell") {
+    scores <- xCell_deconvolution(expr) %>% as.data.frame()
+  } else if(method == "epic") {
+    scores <- epic_deconvolution(expr) %>% as.data.frame()
+  } else if(method == "mcp") {
+    scores <- mcp_deconvolution(expr) %>% as.data.frame()
+  } else if(method == "decosus") {
+    scores <- decosus_deconvolution(expr) %>% as.data.frame()
+  }
   metadata <- deres$dds %>% colData() %>% as.data.frame()
   
   # get responder status and filter
   responders <- metadata %>% filter(response == "responder") %>% rownames()
-  xcell_responders <- xcell_scores %>% select(responders)
+  scores_responders <- scores %>% select(responders)
   
   # get nonresponders
   non_responders <- metadata %>% filter(!response == "responder") %>% rownames()
-  xcell_non_responders <- xcell_scores %>% select(non_responders)
+  scores_non_responders <- scores %>% select(non_responders)
   
   # loop through cells
   cells <- c()
   pvalues <- c()
-  for(i in seq_along(rownames(xcell_scores))) {
-    test_stat <- t.test(as.numeric(xcell_responders[i, ]), as.numeric(xcell_non_responders[i, ]))
+  for(i in seq_along(rownames(scores))) {
+    test_stat <- t.test(as.numeric(scores_responders[i, ]), as.numeric(scores_non_responders[i, ]))
     p_value <- test_stat$p.value
-    cell <- rownames(xcell_scores)[i]
+    cell <- rownames(scores)[i]
     
     cells <- c(cells, cell)
     pvalues <- c(pvalues, p_value)
@@ -505,10 +716,10 @@ deconvolute_significant <- function(deres) {
                                 p_value=pvalues,
                                 p_adj = p.adjust(pvalues, method = "BH"))
   
-  mean_diff <- rowMeans(xcell_responders) - rowMeans(xcell_non_responders)
+  mean_diff <- rowMeans(scores_responders) - rowMeans(scores_non_responders)
   test_statistics$mean_diff <- mean_diff
   
-  log2_fc <- log2(rowMeans(xcell_responders) + 1) - log2(rowMeans(xcell_non_responders) + 1)
+  log2_fc <- log2(rowMeans(scores_responders) + 1) - log2(rowMeans(scores_non_responders) + 1)
   test_statistics$log2_fc <- log2_fc
   
   return(test_statistics)
@@ -780,8 +991,35 @@ list_analyse_print <- function(datasets_list) {
   return(deres_list)
 }
 
+combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
+  gsea_df <- prep_gsea_combined(deres_list)
+  plot_gsea_combined(gsea_df, save = TRUE)
+  
+  genes_combined(deres_list, save=TRUE)
+  genes_combined(deres_list, "all", pvalues_cutoff = 2, save=TRUE)
+  index_combined(deres_list, save=TRUE)
+  
+  deconvolute_combined(deres_list, save=TRUE)
+  # deconvolute_combined(deres_list, method = "epic", save=TRUE, plot=FALSE)
+  deconvolute_combined(deres_list, method = "decosus", save=TRUE, plot=FALSE)
+  
+  pdf(file = pdf_name, width = 8, height = 6)
+  png_files <- list.files(path = "combined_analyses", pattern = "\\.png$", full.names = TRUE)
+  for (i in seq_along(png_files)) {
+    img <- readPNG(png_files[i])
+    grid.newpage()
+    grid.draw(rasterGrob(img, width = unit(1, "npc"), height = unit(1, "npc")))
+  }
+  dev.off()
+  
+  print("------ UP ------")
+  print(common_genes(deres_list, cutoff = 2))
+  print("------ DOWN ------")
+  print(common_genes(deres_list, "down", 2))
+}
+
 # ---- 10.1 Matrisome Combination Analysis  ----
-genes_combined <- function(deres_list, genes = "index", cutoff = 0, plot=TRUE, save=FALSE) {
+genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot=TRUE, save=FALSE) {
   merged_res_list <- list()
   
   # required files
@@ -829,7 +1067,11 @@ genes_combined <- function(deres_list, genes = "index", cutoff = 0, plot=TRUE, s
     gene <- matrisome_file$GeneSymbol[i]
     filter_gene <- combined_res_df %>% filter(GeneSymbol == gene & treatment_status == "response")
     table_significance <- table(filter_gene$significance)
-    if ("< 0.05" %in% names(table_significance) && table_significance["< 0.05"] > cutoff) {
+    if ( pvalues_cutoff == 0 && 
+        ("≥ 0.05" %in% names(table_significance) || "< 0.05" %in% names(table_significance))) {
+      significant_genes <- c(significant_genes, gene) 
+    }
+    else if ("< 0.05" %in% names(table_significance) && table_significance["< 0.05"] >= pvalues_cutoff) {
       significant_genes <- c(significant_genes, gene) 
     }
   }
@@ -881,7 +1123,7 @@ index_combined <- function(deres_list, plot=TRUE, save=FALSE) {
   for (i in seq_along(deres_list)) {
     for (j in seq_along(deres_list[[i]])) {
       entry <- deres_list[[i]][[j]]
-      if(grepl("_response$", entry$name)) {
+      if(grepl("_response$", entry$name) | grepl("_merged$", entry$name)) {
         matrix_index <- matrisome_index(entry)
         
         metadata <- entry$dds %>% colData() %>% as.data.frame()
@@ -1067,7 +1309,7 @@ common_genes <- function(deres_list, direction="up", cutoff=5) {
 }
 
 # ---- 10.3 Deconvolution Combined  ----
-deconvolute_combined <- function(deres_list, plot=TRUE, save=FALSE) {
+deconvolute_combined <- function(deres_list, method = "xcell", plot=TRUE, save=FALSE) {
   merged_deconvolution_list <- list()
   
   for (i in seq_along(deres_list)) {
@@ -1075,10 +1317,10 @@ deconvolute_combined <- function(deres_list, plot=TRUE, save=FALSE) {
       entry <- deres_list[[i]][[j]]
       treatment_status <- sub(".*_(.*)$", "\\1", entry$name)
       
-      if (entry$species == "human" & treatment_status == "response") {
+      if (entry$species == "human" & (treatment_status == "response" || treatment_status == "merged")) {
         # Try to run deconvolute_significant, and skip on error
         tryCatch({
-          deconv <- deconvolute_significant(entry)
+          deconv <- deconvolute_significant(entry, method = method)
           deconv$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
           deconv$tissue <- entry$tissue
           merged_deconvolution_list[[entry$name]] <- deconv
@@ -1111,78 +1353,399 @@ deconvolute_combined <- function(deres_list, plot=TRUE, save=FALSE) {
     theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
   
   if(plot) plot(combined_deconv_plot)
-  if(save) ggsave("combined_analyses/deconv_combined.png", combined_deconv_plot, scale = 3)
+  if(save) ggsave( paste0("combined_analyses/", method, "_deconv_combined.png"), combined_deconv_plot, scale = 3)
 }
 
-# ---- 11. Other Useful Functions  ----
-# To mouse case
-# Required if using homologene mapping
-to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
-  if (method == "case") {
-    return(sapply(symbols, function(g) {
-      if (is.na(g) || nchar(g) == 0) return("")
-      first <- substr(g, 1, 1)
-      rest <- tolower(substr(g, 2, nchar(g)))
-      paste0(first, rest)
-    }))
+# ---- 11. Merger Analysis ----
+
+merge_datasets <- function(deres_list, tissue="pancreas") {
+  required_deres <- list()
+  # get required datasets
+  for (i in seq_along(deres_list)) {
+    deres <- deres_list[[i]][[1]]
+    
+    if (deres$species == "human") {
+      if (tissue == "all" || deres$tissue == tissue) required_deres[[deres$name]] <- deres
+    }
   }
   
-  if (!method %in% c("tomouse", "tohuman")) {
-    stop("Invalid method. Use 'case', 'tomouse', or 'tohuman'.")
+  # prep dataframes
+  metadata <- data.frame()
+  counts_matrix <- data.frame()
+  # loop through required and merge
+  for (i in seq_along(required_deres)) {
+    deres <- required_deres[[i]]
+    required_met <- deres$dds %>% colData() %>% as.data.frame() %>% select(response, batch)
+    metadata <- rbind(metadata, required_met)
+    
+    required_counts <- deres$dds %>% assay() %>% reverse_human_annotate()
+    required_counts$gene_id <- rownames(required_counts)
+    
+    if (nrow(counts_matrix) == 0) {
+      counts_matrix <- required_counts
+    } else {
+      counts_matrix <- full_join(counts_matrix, required_counts, by = "gene_id")
+    }
   }
   
-  if (source=="biomart") {
-    human <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
-    mouse <- useEnsembl(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
-    
-    if(method=="tomouse") {
-      genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = symbols, 
-                       mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
-      mousex <- unique(genesV2[, 2])
-    } else {
-      genesV2 = getLDS(attributes = c("mgi_symbol"), filters = "mgi_symbol", values = symbols, 
-                       mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
-      humanx <- unique(genesV2[, 2])
-    }
-    return(unname(mapped[symbols])) 
-    
-  } else if (source=="annodbi") {
-    horg <- org.Hs.eg.db
-    morg <- org.Mm.eg.db
-    orth <- Orthology.eg.db
-    if(method=="tomouse") {
-      humang <- mapIds(horg, symbols, "ENTREZID", "SYMBOL") %>% na.omit()
-      
-      mapped <- AnnotationDbi::select(orth, humang, "Mus_musculus", "Homo_sapiens")
-      names(mapped) <- c("Homo_egid", "Mus_egid")
-      musyhb <- AnnotationDbi::select(morg, as.character(mapped[,2]), "SYMBOL", "ENTREZID")
-      return(setNames(musyhb[,2], symbols))
-    } else {
-      mouseg_list <- mapIds(morg, keys = symbols, column = "ENTREZID", keytype = "SYMBOL", multiVals = "list")
-      
-      # Flatten by keeping the first valid mapping per symbol
-      mouseg <- sapply(mouseg_list, function(x) if (length(x) > 0) x[1] else NA)
-      
-      # Now mouseg is a named vector
-      valid_idx <- which(!is.na(mouseg))
-      mouseg <- mouseg[valid_idx]
-      symbols <- symbols[valid_idx]
-      
-      mapped <- AnnotationDbi::select(orth, mouseg, "Homo_sapiens","Mus_musculus")
-      names(mapped) <- c("Mus_egid","Homo_egid")
-      husymb <- AnnotationDbi::select(horg, as.character(mapped[,2]), "SYMBOL","ENTREZID")
-      return(setNames(husymb[,2], symbols))
-    }
-  } else {
-    stop("Invalid source. Use biomart or annodbi")
-  }
+  # set rownames, set na to zero
+  rownames(counts_matrix) <- counts_matrix$gene_id
+  counts_matrix$gene_id <- NULL
+  counts_matrix[is.na(counts_matrix)] <- 0
+  
+  dds <- DESeqDataSetFromMatrix(counts_matrix, metadata, ~batch+response)
+  dds$response <- relevel(dds$response, ref = "nonresponder") # relevel dds
+  
+  return(list(metadata=metadata, counts=counts_matrix, dds=dds))
 }
+
+# ---- 11.1 Merged Differential Expression  ----
+merged_de <- function(deres_list, tissue="pancreas") {
+  merged_dataset <- merge_datasets(deres_list, tissue)
+  deres <- run_deseq(merged_dataset$dds, "response_responder_vs_nonresponder")
+  
+  # annotate
+  deres$res <- deres$res %>% as.data.frame() %>% annotate_df("annodbi", "human")
+  
+  # assign metadata
+  deres$name <- paste0(tissue,"_merged")
+  deres$tissue <- tissue
+  deres$species <- "human"
+  
+  return(deres)
+}
+
+# ---- 11.2 Merged Machine Learning  ----
+
+## Functions to prepare datasets 
+
+
+# batch correct vsd
+combat_correction <- function(deres_list, tissue="pancreas") {
+  merged_dataset <- merge_datasets(deres_list, tissue)
+  
+  # Normalise and Log transform
+  dds <- estimateSizeFactors(merged_dataset$dds)
+  vsd <- vst(dds, blind = FALSE)
+  log_expr <- assay(vsd)
+  
+  # Batch Correction
+  mod <- model.matrix(~ response, data = merged_dataset$metadata)
+  combat_expr <- ComBat(dat = log_expr, batch = merged_dataset$metadata$batch, mod = mod)
+  
+  return(list(expr=combat_expr, metadata=merged_dataset$metadata))
+}
+
+# annotate vsd
+merged_filter_matrisome <- function(expr) {
+  matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
+  matrisome_file$...4 <- NULL
+  
+  expr <- expr %>% as.data.frame() %>% annotate_df("annodbi", "human") %>%
+    filter(gene_name %in% matrisome_file$GeneSymbol)
+  expr <- expr[!duplicated(expr$gene_name), ]
+  
+  rownames(expr) <- expr$gene_name
+  expr$gene_name <- NULL
+  
+  return(expr)
+}
+
+# transpose vsd for ml packages
+prepare_ml_data <- function(deres_list, use_matrisome=FALSE, tissue="pancreas") {
+  cor_data <- combat_correction(deres_list, tissue)
+  
+  if(isTRUE(use_matrisome)) {cor_data$expr <- cor_data$expr %>% merged_filter_matrisome()}
+  
+  df <- as.data.frame(t(cor_data$expr))  # samples as rows
+  df$response <- as.factor(cor_data$metadata$response)
+  return(df)
+}
+
+pca_merged <- function(deres_list, tissue="pancreas") {
+  # Perform PCA
+  ml_df <- prepare_ml_data(deres_list, tissue)
+  pca_res <- PCA(ml_df[ , !colnames(ml_df) %in% "response"], graph = FALSE)
+  
+  # Visualise
+  fviz_pca_ind(pca_res,
+               geom.ind = "point",
+               habillage = ml_df$response,
+               addEllipses = TRUE,
+               palette = "jco")
+}
+
+# ---- 11.2.1 ML Models ----
+run_ml_models <- function(df, method = "rf", tuneLength = 5, seed = 42) {
+  set.seed(seed)
+  
+  # Split data
+  trainIndex <- createDataPartition(df$response, p = 0.7, list = FALSE)
+  train <- df[trainIndex, ]
+  test <- df[-trainIndex, ]
+  
+  # Train model
+  trctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3,
+                         classProbs = TRUE, summaryFunction = twoClassSummary)
+  
+  model <- train(response ~ ., data = train, method = method,
+                 metric = "ROC", trControl = trctrl, tuneLength = tuneLength)
+  
+  # Predict on test set
+  predictions <- predict(model, newdata = test)
+  prob <- predict(model, newdata = test, type = "prob")
+  
+  # Evaluate
+  confusion <- confusionMatrix(predictions, test$response)
+  roc_obj <- roc(response = test$response, predictor = prob[, "responder"])
+  
+  list(model = model,
+       confusion = confusion,
+       roc = roc_obj,
+       auc = auc(roc_obj))
+}
+
+compare_ml_models <- function(df, models = c("rf", "svmRadial", "glmnet"),
+                              tuneLength = 5, seed = 42) {
+  set.seed(seed)
+  
+  trainIndex <- createDataPartition(df$response, p = 0.7, list = FALSE)
+  train <- df[trainIndex, ]
+  test <- df[-trainIndex, ]
+  
+  trctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3,
+                         classProbs = TRUE, summaryFunction = twoClassSummary,
+                         savePredictions = "final")
+  
+  results <- list()
+  
+  for (model in models) {
+    message("Training model: ", model)
+    
+    fit <- train(response ~ ., data = train, method = model,
+                 trControl = trctrl, metric = "ROC", tuneLength = tuneLength)
+    
+    pred <- predict(fit, newdata = test)
+    prob <- predict(fit, newdata = test, type = "prob")
+    
+    roc_obj <- roc(response = test$response, predictor = prob[, "responder"])
+    
+    results[[model]] <- list(model = fit,
+                             confusion = confusionMatrix(pred, test$response),
+                             auc = auc(roc_obj),
+                             roc = roc_obj)
+  }
+  
+  return(results)
+}
+
+
+plot_model_aucs <- function(results) {
+  aucs <- sapply(results, function(x) x$auc)
+  barplot(aucs, beside = TRUE, col = "skyblue",
+          main = "AUCs of ML Models", ylab = "AUC", ylim = c(0, 1))
+}
+
+run_rfe <- function(df, method = "rf", seed = 42) {
+  set.seed(seed)
+  
+  ctrl <- rfeControl(functions = rfFuncs,
+                     method = "repeatedcv",
+                     number = 5, repeats = 3)
+  
+  predictors <- df[ , !names(df) %in% "response"]
+  response <- df$response
+  
+  rfe_result <- rfe(predictors, response,
+                    sizes = c(5, 10, 20, 50, 100),
+                    rfeControl = ctrl)
+  
+  return(rfe_result)
+}
+
+extract_model_features <- function(model_results, top_n = 20, plot = TRUE) {
+  all_features <- list()
+  
+  for (model_name in names(model_results)) {
+    model_obj <- model_results[[model_name]]$model
+    
+    # Try extracting importance safely
+    importance_obj <- try(varImp(model_obj), silent = TRUE)
+    if (inherits(importance_obj, "try-error")) {
+      message("Skipping model ", model_name, ": varImp not available.")
+      next
+    }
+    
+    importance_df <- importance_obj$importance
+    importance_df$Feature <- rownames(importance_df)
+    
+    # Handle multi-class or multiple metrics
+    if (!"Overall" %in% colnames(importance_df)) {
+      # Take mean importance across columns
+      importance_df$Overall <- rowMeans(importance_df[ , sapply(importance_df, is.numeric)], na.rm = TRUE)
+    }
+    
+    top_df <- importance_df %>%
+      arrange(desc(Overall)) %>%
+      head(top_n)
+    
+    top_df$Model <- model_name
+    all_features[[model_name]] <- top_df
+    
+    if (plot) {
+      ggplot(top_df, aes(x = reorder(Feature, Overall), y = Overall)) +
+        geom_col(fill = "steelblue") +
+        coord_flip() +
+        labs(title = paste("Top", top_n, "Features -", model_name),
+             x = "Gene", y = "Importance") +
+        theme_minimal() -> p
+      print(p)
+    }
+  }
+  
+  return(all_features)
+}
+
+# ---- 11.2.2 ML Gene Signatures ----
+
+build_gene_signature <- function(df, seed = 42) {
+  set.seed(seed)
+  
+  x <- as.matrix(df[ , !colnames(df) %in% "response"])
+  y <- as.factor(df$response)
+  y_bin <- ifelse(y == "responder", 1, 0)
+  
+  # Fit LASSO model (logistic regression with L1 penalty)
+  cvfit <- cv.glmnet(x, y_bin, family = "binomial", alpha = 1)
+  
+  # Extract coefficients at lambda.1se (simpler model)
+  coefs <- coef(cvfit, s = "lambda.min")
+  coef_df <- as.data.frame(as.matrix(coefs))
+  coef_df$Gene <- rownames(coef_df)
+  colnames(coef_df)[1] <- "Weight"
+  
+  # Filter non-zero coefficients (excluding intercept)
+  gene_signature <- coef_df %>%
+    filter(Weight != 0 & Gene != "(Intercept)")
+  
+  return(list(signature = gene_signature,
+              model = cvfit))
+}
+
+prepare_counts_ml_df <- function(counts) {
+  col_data <- data.frame(row.names = colnames(counts),
+                         dummy = factor(rep("A", ncol(counts))))
+  
+  # Create DESeqDataSet
+  dds <- DESeqDataSetFromMatrix(countData = counts ,
+                                colData = col_data,
+                                design = ~1)
+  
+  # Normalize + transform (VST recommended)
+  dds <- estimateSizeFactors(dds)
+  vst_expr <- assay(vst(dds, blind = TRUE)) %>% merged_filter_matrisome()
+  
+  # Transpose to match expected input (samples as rows)
+  vst_df <- as.data.frame(t(vst_expr))
+  
+  return(vst_df)
+}
+
+apply_gene_signature <- function(expr_df, gene_signature) {
+  genes <- gene_signature$Gene
+  weights <- gene_signature$Weight
+  
+  expr_sub <- expr_df[ , genes, drop = FALSE]
+  
+  # If gene is missing in new data, fill with 0
+  missing_genes <- setdiff(genes, colnames(expr_df))
+  if (length(missing_genes) > 0) {
+    expr_sub[ , missing_genes] <- 0
+  }
+  
+  # Align columns
+  expr_sub <- expr_sub[ , genes]
+  
+  # Compute score = weighted sum
+  scores <- as.matrix(expr_sub) %*% as.matrix(weights)
+  
+  return(data.frame(Sample = rownames(expr_df), Score = as.numeric(scores)))
+}
+
+evaluate_signature_performance <- function(score_df, label_col = "response", score_col = "Score", plot = TRUE) {
+  library(pROC)
+  library(caret)
+  library(ggplot2)
+  library(dplyr)
+  
+  # Drop rows with missing response or score
+  score_df <- score_df %>% filter(!is.na(.data[[label_col]]), !is.na(.data[[score_col]]))
+  
+  response <- factor(score_df[[label_col]], levels = c("nonresponder", "responder"))
+  score <- score_df[[score_col]]
+  
+  # ROC + AUC
+  roc_obj <- roc(response = response, predictor = score)
+  auc_val <- auc(roc_obj)
+  
+  # Optimal threshold
+  coords_opt <- coords(roc_obj, "best", best.method = "youden", transpose = FALSE)
+  opt_threshold <- coords_opt["threshold"]
+  
+  # Predictions based on threshold
+  predicted <- ifelse(score > opt_threshold, "responder", "nonresponder")
+  predicted <- factor(predicted, levels = c("nonresponder", "responder"))
+  
+  # Ensure matching length
+  valid_idx <- complete.cases(response, predicted)
+  response <- response[valid_idx]
+  predicted <- predicted[valid_idx]
+  
+  cm <- confusionMatrix(predicted, response)
+  
+  metrics <- data.frame(
+    Accuracy = cm$overall["Accuracy"],
+    Precision = cm$byClass["Pos Pred Value"],
+    Recall = cm$byClass["Sensitivity"],
+    Specificity = cm$byClass["Specificity"],
+    F1 = 2 * ((cm$byClass["Sensitivity"] * cm$byClass["Pos Pred Value"]) /
+                (cm$byClass["Sensitivity"] + cm$byClass["Pos Pred Value"]))
+  )
+  
+  if (plot) {
+    # ROC plot
+    plot(roc_obj, col = "blue", lwd = 2, main = "ROC Curve - Gene Signature")
+    legend("bottomright", legend = paste("AUC =", round(auc_val, 3)), col = "blue", lwd = 2)
+    
+    # Confusion plot
+    score_df$Predicted <- predicted
+    ggplot(score_df, aes(x = .data[[label_col]], fill = Predicted)) +
+      geom_bar(position = "dodge") +
+      labs(title = "True vs Predicted Classes",
+           x = "True Label", y = "Count") +
+      theme_minimal() +
+      scale_fill_manual(values = c("firebrick", "steelblue")) -> p
+    print(p)
+  }
+  
+  return(list(
+    auc = auc_val,
+    threshold = opt_threshold,
+    confusion_matrix = cm,
+    metrics = metrics,
+    roc = roc_obj,
+    predicted = predicted
+  ))
+}
+
+# ---- 12. Other Useful Functions  ----
+
 
 check_valid_data <- function(counts, metadata) {
   print(all(colnames(counts) == rownames(metadata)))
 }
 
-save_data <- function(gse, counts, metadata) {
+save_geo_data <- function(gse, counts, metadata) {
   write.csv(counts, paste0("bulk/", gse, "/counts.csv"), row.names = TRUE)
   write.csv(metadata, paste0("bulk/", gse, "/metadata.csv"), row.names = TRUE)
 }
@@ -1199,122 +1762,3 @@ read_GEO_matrix_file <- function(location) {
   
   return(df)
 }
-
-
-
-# datasets vector format
-# c(batch_name, counts_matrix=NULL, metadata=NULL, de_res = NULL)
-merge_datasets <- function(datasets_vector, species="human", annotation="annodbi") {
-  merged_counts <- NULL
-  merged_metadata <- NULL
-  
-  for (i in seq_along(datasets_vector)) {
-    # 1. Load dataset
-    title <- datasets_vector[[i]]$title
-    if(!is.null(datasets_vector[[i]]$deres)) {
-      deres <- datasets_vector[[i]]$deres$dds
-      counts_matrix <- assay(deres)  # stays as matrix
-      metadata <- as.data.frame(colData(deres))
-    } else {
-      counts_matrix <- datasets_vector[[i]]$counts
-      metadata <- datasets_vector[[i]]$metadata
-    }
-
-    # 2. Reverse annotation
-    counts_matrix <- reverse_annotate(counts_matrix, species, annotation)
-    
-    # 3. Filter lowly expressed genes
-    keep <- rowSums(counts_matrix >= 10) >= 3
-    counts_matrix <- counts_matrix[keep, ]
-    
-    # 4. Merge counts (by rownames = Ensembl IDs)
-    if (is.null(merged_counts)) {
-      merged_counts <- counts_matrix
-    } else {
-      # Full join and fill NAs with 0
-      merged_counts <- merge(
-        merged_counts,
-        counts_matrix,
-        by = "row.names",
-        all = TRUE
-      )
-      rownames(merged_counts) <- merged_counts$Row.names
-      merged_counts$Row.names <- NULL
-      merged_counts[is.na(merged_counts)] <- 0
-    }
-    
-    # 5. Prepare and merge metadata
-    metadata$sample <- rownames(metadata)
-    metadata$response <- tolower(metadata$response)
-    metadata$batch <- title  # use provided title
-    metadata <- metadata[, c("sample", "response", "batch")]
-    
-    merged_metadata <- if (is.null(merged_metadata)) metadata else rbind(merged_metadata, metadata)
-  }
-  
-
-  # 6. Run DESeq2 on merged datasets
-  deres_merged <- rna_seq_analysis(merged_counts, merged_metadata, ~batch+response, annotation="annodbi", title="response_responder_vs_nonresponder", species = species)
-  
-  return(deres_merged)
-}
-
-reverse_annotate <- function(counts_matrix, species, method) {
-  # Ensure input is a matrix
-  if (!is.matrix(counts_matrix)) {
-    counts_matrix <- as.matrix(counts_matrix)
-  }
-  
-  # If Ensembl IDs with version are present
-  if (grepl("^ENS", rownames(counts_matrix)[1])) {
-    ids <- sub("\\..*", "", rownames(counts_matrix))  # strip versions
-    counts_matrix <- rowsum(counts_matrix, group = ids)  # collapse duplicates
-  } else {
-    ids <- rownames(counts_matrix)
-    
-    if (method == "biomart") {
-      if(species == "human") ensembl <- biomaRt::useMart("ensembl", dataset = "hsapiens_gene_ensembl")
-      else ensembl <- biomaRt::useMart("ensembl", dataset = "mmusculus_gene_ensembl")
-      
-      attributes <- c("external_gene_name", "ensembl_gene_id")
-      
-      ensembl_names <- biomaRt::getBM(
-        attributes = attributes,
-        filters = "external_gene_name",
-        values = ids,
-        mart = ensembl
-      )
-      
-      ensembl_names <- ensembl_names[!duplicated(ensembl_names$external_gene_name), ]
-      matched_ids <- ensembl_names$ensembl_gene_id[match(ids, ensembl_names$external_gene_name)]
-    } else {
-      if(species == "human") orgdb <- org.Hs.eg.db
-      else orgdb <- org.Mm.eg.db
-      
-      annotations_orgDb <- AnnotationDbi::select(
-        orgdb,
-        keys = ids,
-        columns = c("ENSEMBL", "SYMBOL"),
-        keytype = "SYMBOL"
-      )
-      
-      annotations_orgDb <- annotations_orgDb[!duplicated(annotations_orgDb$SYMBOL), ]
-      matched_ids <- annotations_orgDb$ENSEMBL[match(ids, annotations_orgDb$SYMBOL)]
-    }
-    
-    # Safe annotation & duplicate handling
-    counts_df <- as.data.frame(counts_matrix)
-    counts_df$mapped_id <- matched_ids
-    
-    counts_df <- counts_df[!is.na(counts_df$mapped_id), ]
-    counts_df <- aggregate(. ~ mapped_id, data = counts_df, FUN = sum)
-    
-    rownames(counts_df) <- counts_df$mapped_id
-    counts_df$mapped_id <- NULL
-    
-    counts_matrix <- as.matrix(counts_df)
-  }
-  
-  return(counts_matrix)
-}
-  
