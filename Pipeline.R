@@ -1,4 +1,4 @@
-# RNA Seq Pipeline Useful Functions
+# RNA Seq Response Analysis Pipeline
 
 # ----- Load all packages  ----
 
@@ -15,6 +15,7 @@ library(DESeq2)
 
 # pathway analysis
 library(clusterProfiler)
+library(GSVA)
 
 # deconvolution Packages
 library(xCell)
@@ -47,7 +48,6 @@ library(qpdf)
 
 # ML packages
 library(caret)
-library(randomForest)
 library(pROC)
 library(FactoMineR)
 library(factoextra)
@@ -209,7 +209,7 @@ annotate_genes <- function(gene_list, method, species) {
 }
 
 # annotate df and add annotation column (gene_name) to df
-annotate_df <- function(df, method, species) {
+annotate_df <- function(df, method="annodbi", species="human") {
   ids <- rownames(df)
   df$original <- ids
   
@@ -570,7 +570,7 @@ pathway_enrichment <- function(deres, view_all = TRUE, category = "H", subset = 
   return(gseaRes)
 }
 
-custom_pathway_enrichment <- function(deres, view_all = TRUE) {
+matrisome_pathway_enrichment <- function(deres, view_all = TRUE) {
   species <- deres$species
   
   # get DESeq2 results
@@ -608,11 +608,68 @@ custom_pathway_enrichment <- function(deres, view_all = TRUE) {
   return(gseaRes)
 }
 
+# custom_human_pathway = df w/ 1 column term, 1 column gene
+custom_pathway_enrichment <- function(deres, custom_human_pathway, view_all=TRUE) {
+  species <- deres$species
+  
+  # get DESeq2 results
+  res <- deres$res
+  # remove NAs
+  res <- res[!is.na(res$gene_name) & !is.na(res$stat), ]
+  # remove duplicates (keep highest stat per gene)
+  res <- res[!duplicated(res$gene_name), ]
+  
+  # create ranked gene list
+  geneList <- res$stat
+  names(geneList) <- res$gene_name
+  geneList <- sort(geneList, decreasing = TRUE)
+  
+  # if(species == "mouse") custom_human_pathway$gene <- custom_human_pathway$gene %>% to_mouse_case(., source = "annodbi")
+  
+  # set p-value cutoff depending on view_all
+  pcut <- ifelse(view_all, 2, 0.05)
+  
+  # run GSEA
+  gseaRes <- GSEA(geneList, TERM2GENE = custom_human_pathway, pvalueCutoff = pcut)
+  
+  return(gseaRes)
+}
+
 dotplot_pathways <- function(gseaRes, plot=TRUE, save=FALSE, save_name=NULL) { 
   pathways_dotplot <- clusterProfiler::dotplot(gseaRes, x = "GeneRatio",
                               color = "NES", size = "p.adjust")
   
   plot_or_save(pathways_dotplot, deres, plot, save, save_name, "pathways")
+}
+
+ssGSEA_score <- function(counts, metadata, gene_list) {
+  gene_sets <- gene_list %>% group_by(term) %>% 
+    summarise(genes = list(unique(gene))) %>% deframe()
+  
+  expr_mat <- counts %>% prepare_new_annotated_data() %>% as.matrix()
+  
+  ssgsea <- ssgseaParam(
+    expr_mat, gene_sets,
+    minSize = 1, maxSize = Inf,
+    alpha = 0.25, normalize = TRUE
+  )
+  
+  ssgsea_scores <- gsva(ssgsea, verbose = TRUE)
+  
+  ssgsea_df <- as.data.frame(t(ssgsea_scores)) %>%
+    rownames_to_column("sample") %>%
+    pivot_longer(-sample, names_to = "model", values_to = "ssgsea_score")
+  
+  metadata$sample <- rownames(metadata)
+  ssgsea_df <- ssgsea_df %>%
+    left_join(metadata, by = "sample")
+  
+  ggplot(ssgsea_df, aes(x = response, y = ssgsea_score, fill = response)) +
+    geom_boxplot() +
+    facet_wrap(~ model, scales = "free_y") +
+    theme_minimal() +
+    labs(title = "ssGSEA scores") + 
+    stat_compare_means()
 }
 
 # ---- 7. Bulk Deconvolution  ----
@@ -675,9 +732,6 @@ decosus_deconvolution <- function(expr) {
   return(est_Decosus_cells %>% as.matrix())
 }
 
-
-
-
 deconvolute_significant <- function(deres, method="xcell") {
   expr <- prepare_deconvolution_matrix(deres)
   
@@ -685,11 +739,12 @@ deconvolute_significant <- function(deres, method="xcell") {
   if(method == "xcell") {
     scores <- xCell_deconvolution(expr) %>% as.data.frame()
   } else if(method == "epic") {
-    scores <- epic_deconvolution(expr) %>% as.data.frame()
+    scores <- epic_deconvolution(expr)%>% t() %>% as.data.frame()
   } else if(method == "mcp") {
     scores <- mcp_deconvolution(expr) %>% as.data.frame()
   } else if(method == "decosus") {
-    scores <- decosus_deconvolution(expr) %>% as.data.frame()
+    scores <- decosus_deconvolution(expr) %>% as.data.frame() %>%
+      mutate(across(everything(), ~ ifelse(is.nan(.), 0, .)))
   }
   metadata <- deres$dds %>% colData() %>% as.data.frame()
   
@@ -698,7 +753,7 @@ deconvolute_significant <- function(deres, method="xcell") {
   scores_responders <- scores %>% select(responders)
   
   # get nonresponders
-  non_responders <- metadata %>% filter(!response == "responder") %>% rownames()
+  non_responders <- metadata %>% filter(response != "responder") %>% rownames()
   scores_non_responders <- scores %>% select(non_responders)
   
   # loop through cells
@@ -721,6 +776,8 @@ deconvolute_significant <- function(deres, method="xcell") {
   
   log2_fc <- log2(rowMeans(scores_responders) + 1) - log2(rowMeans(scores_non_responders) + 1)
   test_statistics$log2_fc <- log2_fc
+  
+  test_statistics$overall_mean <- rowMeans(scores)
   
   return(test_statistics)
 }
@@ -900,7 +957,7 @@ printer_analysis <- function(deres, extra_info=NULL) {
   dotplot_pathways(gseaResNaba, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_naba.png"))
   
   # GSEA custom matrisome
-  gseaResMatrisome <- custom_pathway_enrichment(deres)
+  gseaResMatrisome <- matrisome_pathway_enrichment(deres)
   dotplot_pathways(gseaResMatrisome, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_matrisome.png"))
   
   ### Slide 12+: Matrix Index
@@ -991,6 +1048,15 @@ list_analyse_print <- function(datasets_list) {
   return(deres_list)
 }
 
+analyse_datasets <- function(datasets_list) {
+  deres_list <- lapply(datasets_list, function(dataset){
+    deres <- response_analysis(dataset$name, dataset$counts, dataset$metadata, dataset$species, "annodbi")
+    return(deres)
+  })
+  
+  return(deres_list)
+}
+
 combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
   gsea_df <- prep_gsea_combined(deres_list)
   plot_gsea_combined(gsea_df, save = TRUE)
@@ -1000,8 +1066,9 @@ combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
   index_combined(deres_list, save=TRUE)
   
   deconvolute_combined(deres_list, save=TRUE)
-  # deconvolute_combined(deres_list, method = "epic", save=TRUE, plot=FALSE)
-  deconvolute_combined(deres_list, method = "decosus", save=TRUE, plot=FALSE)
+  deconvolute_combined(deres_list, method = "mcp", save=TRUE)
+  deconvolute_combined(deres_list, method = "epic", save=TRUE)
+  deconvolute_combined(deres_list, method = "decosus", save=TRUE)
   
   pdf(file = pdf_name, width = 8, height = 6)
   png_files <- list.files(path = "combined_analyses", pattern = "\\.png$", full.names = TRUE)
@@ -1019,7 +1086,7 @@ combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
 }
 
 # ---- 10.1 Matrisome Combination Analysis  ----
-genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot=TRUE, save=FALSE) {
+genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot=TRUE, save=FALSE, gene_list=NULL) {
   merged_res_list <- list()
   
   # required files
@@ -1061,6 +1128,7 @@ genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot
     mutate(significance = ifelse(is.na(padj), "NA", ifelse(padj < 0.05, "< 0.05", "≥ 0.05")))
   
   if(genes == "index") combined_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% matrisome_index, ]
+  else if (genes == "custom") combined_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% gene_list, ]
   
   significant_genes <- c()
   for(i in seq_along(matrisome_file$GeneSymbol)) {
@@ -1222,7 +1290,7 @@ prep_gsea_combined <- function(deres_list, type = "hallmark") {
         naba_enrich$category <- "pathways"
         
         # prep matrisome pathways
-        custom_enrich <- custom_pathway_enrichment(entry, view_all = TRUE)@result
+        custom_enrich <- matrisome_pathway_enrichment(entry, view_all = TRUE)@result
         custom_enrich$facet <- "Matrisome"
         custom_enrich <- left_join(custom_enrich, matrisome_pathways, by="ID")
         
@@ -1288,6 +1356,65 @@ plot_gsea_combined <- function(combined_gsea_df, plot=TRUE, save=FALSE) {
   if(save) ggsave("combined_analyses/gsea_combined.png", gsea_combined, scale = 3)
 }
 
+plot_custom_gsea_combined <- function(deres_list, custom_pathway) {
+  merged_gsea_list <- list()
+  
+  for (i in seq_along(deres_list)) {
+    for (j in seq_along(deres_list[[i]])) {
+      entry <- deres_list[[i]][[j]]
+      treatment_status <- sub(".*_(.*)$", "\\1", entry$name)
+      if (treatment_status == "response") {
+        gsea <- custom_pathway_enrichment(entry, custom_pathway)@result
+        if (nrow(gsea) > 0) {
+          gsea$category <- "ML"
+          
+          gsea$treatment_status <- sub(".*_(.*)$", "\\1", entry$name)
+          gsea$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
+          gsea$species <- entry$species
+          gsea$tissue <- entry$tissue
+          
+          merged_gsea_list[[entry$name]] <- gsea
+        }
+      }
+    }
+  }
+  
+  # combine all
+  combined_gsea_df <- do.call(rbind, merged_gsea_list) %>% 
+    mutate(significance = ifelse(p.adjust < 0.05, "< 0.05", "≥ 0.05"))
+  
+  # colored labels for species
+  combined_gsea_df$dataset_label <- case_when(
+    combined_gsea_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", combined_gsea_df$dataset, "</span>"),
+    combined_gsea_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", combined_gsea_df$dataset, "</span>"),
+    TRUE ~ combined_gsea_df$dataset
+  )
+  
+  # order dataset by tissue
+  combined_gsea_df$dataset_label <- factor(
+    combined_gsea_df$dataset_label,
+    levels = combined_gsea_df %>%
+      distinct(dataset_label, tissue) %>%
+      arrange(tissue, dataset_label) %>%
+      pull(dataset_label)
+  ) %>% paste0(combined_gsea_df$tissue, " | ", .)
+  
+  gsea_combined <- ggplot(combined_gsea_df, aes(x = ID, y = dataset_label)) +
+    # dotplot
+    geom_point(aes(size = significance, color = NES)) +
+    scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5)) +
+    scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    
+    # text theme
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.y = element_markdown(size = 8),
+      strip.text = element_text(size = 10)
+    ) + labs(x = NULL, y = NULL)
+  
+  plot(gsea_combined)
+}
+
 # ---- 10.3 Common Genes  ----
 # find commonly upregulated and downregulated genes
 common_genes <- function(deres_list, direction="up", cutoff=5) {
@@ -1308,7 +1435,7 @@ common_genes <- function(deres_list, direction="up", cutoff=5) {
   return(sort(common, decreasing = TRUE))
 }
 
-# ---- 10.3 Deconvolution Combined  ----
+# ---- 10.4 Deconvolution Combined  ----
 deconvolute_combined <- function(deres_list, method = "xcell", plot=TRUE, save=FALSE) {
   merged_deconvolution_list <- list()
   
@@ -1399,7 +1526,6 @@ merge_datasets <- function(deres_list, tissue="pancreas") {
   return(list(metadata=metadata, counts=counts_matrix, dds=dds))
 }
 
-# ---- 11.1 Merged Differential Expression  ----
 merged_de <- function(deres_list, tissue="pancreas") {
   merged_dataset <- merge_datasets(deres_list, tissue)
   deres <- run_deseq(merged_dataset$dds, "response_responder_vs_nonresponder")
@@ -1415,26 +1541,78 @@ merged_de <- function(deres_list, tissue="pancreas") {
   return(deres)
 }
 
-# ---- 11.2 Merged Machine Learning  ----
+# ---- 12 Machine Learning  ----
 
-## Functions to prepare datasets 
-
-
+## Functions to prepare datasets
 # batch correct vsd
-combat_correction <- function(deres_list, tissue="pancreas") {
-  merged_dataset <- merge_datasets(deres_list, tissue)
-  
+combat_correction <- function(merged_dataset) {
   # Normalise and Log transform
-  dds <- estimateSizeFactors(merged_dataset$dds)
-  vsd <- vst(dds, blind = FALSE)
-  log_expr <- assay(vsd)
+  raw_counts <- merged_dataset$counts
+  
+  # Compute library sizes and CPM
+  lib_sizes <- colSums(raw_counts)
+  cpm <- sweep(raw_counts, 2, lib_sizes, FUN = "/") * 1e6
+  
+  # Log2-transform
+  log2_cpm <- log2(cpm + 1)
+  log2_cpm <- as.matrix(log2_cpm)
   
   # Batch Correction
   mod <- model.matrix(~ response, data = merged_dataset$metadata)
-  combat_expr <- ComBat(dat = log_expr, batch = merged_dataset$metadata$batch, mod = mod)
+  combat_expr <- ComBat(dat = log2_cpm, batch = merged_dataset$metadata$batch, mod = mod)
   
   return(list(expr=combat_expr, metadata=merged_dataset$metadata))
 }
+
+# prepare unseen data counts
+prepare_new_data <- function(counts) {
+  lib_sizes <- colSums(counts)
+  cpm <- sweep(counts, 2, lib_sizes, FUN = "/") * 1e6
+  log2_cpm <- log2(cpm + 1) %>% as.data.frame()
+  
+  return(log2_cpm)
+}
+
+prepare_new_annotated_data <- function(counts) {
+  exp_data <- prepare_new_data(counts) %>% annotate_df()
+  exp_data <- exp_data[!is.na(exp_data$gene_name), ]
+  rownames(exp_data) <- make.unique(as.character(exp_data$gene_name))
+  exp_data$gene_name <- NULL
+  
+  return(exp_data)
+}
+
+prepare_new_data_batch <- function(new_counts, new_metadata, train_counts, train_metadata) {
+  new_counts <- new_counts %>% reverse_human_annotate()
+  
+  # 1. Match common genes between train and new data
+  common_genes <- intersect(rownames(train_counts), rownames(new_counts))
+  train_counts_matched <- train_counts[common_genes, , drop = FALSE]
+  new_counts_matched   <- new_counts[common_genes, , drop = FALSE]
+  
+  # 2. Combine counts (genes x samples)
+  combined_counts <- cbind(train_counts_matched, new_counts_matched)
+  
+  # 3. Calculate log2 CPM
+  lib_sizes <- colSums(combined_counts)
+  cpm <- sweep(combined_counts, 2, lib_sizes, FUN = "/") * 1e6
+  log2_cpm <- log2(cpm + 1)
+  
+  # 4. Combine metadata and align sample names
+  combined_meta <- rbind(train_metadata, new_metadata)
+  combined_meta <- combined_meta[colnames(log2_cpm), ]  # ensure correct sample order
+  
+  # 5. Model matrix and ComBat
+  mod <- model.matrix(~ 1, data = combined_meta)
+  combat_expr <- ComBat(dat = log2_cpm, batch = combined_meta$batch, mod = mod)
+  
+  # 6. Extract only the new samples
+  test_expr_corrected <- combat_expr[, colnames(new_counts_matched)]
+  
+  # 7. Return: transposed so rows = samples, cols = genes
+  return(as.data.frame(t(test_expr_corrected)))
+}
+
 
 # annotate vsd
 merged_filter_matrisome <- function(expr) {
@@ -1452,8 +1630,8 @@ merged_filter_matrisome <- function(expr) {
 }
 
 # transpose vsd for ml packages
-prepare_ml_data <- function(deres_list, use_matrisome=FALSE, tissue="pancreas") {
-  cor_data <- combat_correction(deres_list, tissue)
+prepare_ml_data <- function(merged_dataset, use_matrisome=FALSE) {
+  cor_data <- combat_correction(merged_dataset)
   
   if(isTRUE(use_matrisome)) {cor_data$expr <- cor_data$expr %>% merged_filter_matrisome()}
   
@@ -1462,9 +1640,9 @@ prepare_ml_data <- function(deres_list, use_matrisome=FALSE, tissue="pancreas") 
   return(df)
 }
 
-pca_merged <- function(deres_list, tissue="pancreas") {
+pca_merged <- function(merged_dataset) {
   # Perform PCA
-  ml_df <- prepare_ml_data(deres_list, tissue)
+  ml_df <- prepare_ml_data(merged_dataset)
   pca_res <- PCA(ml_df[ , !colnames(ml_df) %in% "response"], graph = FALSE)
   
   # Visualise
@@ -1475,7 +1653,7 @@ pca_merged <- function(deres_list, tissue="pancreas") {
                palette = "jco")
 }
 
-# ---- 11.2.1 ML Models ----
+# ---- 12.1 ML Models ----
 run_ml_models <- function(df, method = "rf", tuneLength = 5, seed = 42) {
   set.seed(seed)
   
@@ -1546,23 +1724,6 @@ plot_model_aucs <- function(results) {
           main = "AUCs of ML Models", ylab = "AUC", ylim = c(0, 1))
 }
 
-run_rfe <- function(df, method = "rf", seed = 42) {
-  set.seed(seed)
-  
-  ctrl <- rfeControl(functions = rfFuncs,
-                     method = "repeatedcv",
-                     number = 5, repeats = 3)
-  
-  predictors <- df[ , !names(df) %in% "response"]
-  response <- df$response
-  
-  rfe_result <- rfe(predictors, response,
-                    sizes = c(5, 10, 20, 50, 100),
-                    rfeControl = ctrl)
-  
-  return(rfe_result)
-}
-
 extract_model_features <- function(model_results, top_n = 20, plot = TRUE) {
   all_features <- list()
   
@@ -1606,9 +1767,8 @@ extract_model_features <- function(model_results, top_n = 20, plot = TRUE) {
   return(all_features)
 }
 
-# ---- 11.2.2 ML Gene Signatures ----
-
-build_gene_signature <- function(df, seed = 42) {
+# ---- 12.2 ML Gene Signatures ----
+glmnet_gene_signature <- function(df, seed = 42) {
   set.seed(seed)
   
   x <- as.matrix(df[ , !colnames(df) %in% "response"])
@@ -1628,119 +1788,310 @@ build_gene_signature <- function(df, seed = 42) {
   gene_signature <- coef_df %>%
     filter(Weight != 0 & Gene != "(Intercept)")
   
-  return(list(signature = gene_signature,
-              model = cvfit))
+  return(gene_signature)
 }
 
-prepare_counts_ml_df <- function(counts) {
-  col_data <- data.frame(row.names = colnames(counts),
-                         dummy = factor(rep("A", ncol(counts))))
+caret_gene_signature <- function(df, seed=42) {
+  set.seed(seed)
   
-  # Create DESeqDataSet
-  dds <- DESeqDataSetFromMatrix(countData = counts ,
-                                colData = col_data,
-                                design = ~1)
+  # 1. Prepare training data
+  df$response <- as.factor(df$response)
   
-  # Normalize + transform (VST recommended)
-  dds <- estimateSizeFactors(dds)
-  vst_expr <- assay(vst(dds, blind = TRUE)) %>% merged_filter_matrisome()
+  # 2. Define training control
+  train_control <- caret::trainControl(
+    method = "repeatedcv",
+    number = 10,
+    repeats = 3,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    savePredictions = "final"
+  )
   
-  # Transpose to match expected input (samples as rows)
-  vst_df <- as.data.frame(t(vst_expr))
+  model_glmnet <- train(
+    response ~ .,
+    data = df,
+    method = "glmnet",
+    family = "binomial",
+    trControl = train_control,
+    metric = "ROC",
+    tuneLength = 10,
+    preProcess = c("center", "scale")
+  )
   
-  return(vst_df)
+  # 3. Extract Gene Signature
+  
+  # Best lambda value
+  best_lambda <- model_glmnet$bestTune$lambda
+  
+  # Coefficients at best lambda
+  coefs <- coef(model_glmnet$finalModel, s = best_lambda)
+  
+  # Convert to dataframe and filter
+  coef_df <- as.data.frame(as.matrix(coefs))
+  coef_df$Gene <- rownames(coef_df)
+  colnames(coef_df)[1] <- "Weight"
+  
+  # Keep non-zero (excluding intercept)
+  gene_signature <- coef_df %>%
+    filter(Weight != 0 & Gene != "(Intercept)")
+  
+  return(gene_signature)
 }
+
 
 apply_gene_signature <- function(expr_df, gene_signature) {
   genes <- gene_signature$Gene
   weights <- gene_signature$Weight
   
-  expr_sub <- expr_df[ , genes, drop = FALSE]
   
-  # If gene is missing in new data, fill with 0
+   # 1. Identify missing genes
   missing_genes <- setdiff(genes, colnames(expr_df))
+  
+  # 2. Create a full matrix with all genes in the signature
+  #    Fill missing genes with zeros
+  expr_sub <- expr_df[, intersect(genes, colnames(expr_df)), drop = FALSE]
+  
   if (length(missing_genes) > 0) {
-    expr_sub[ , missing_genes] <- 0
+    # Create a matrix of zeros with same number of rows and missing gene columns
+    zero_mat <- matrix(0, nrow = nrow(expr_df), ncol = length(missing_genes))
+    colnames(zero_mat) <- missing_genes
+    rownames(zero_mat) <- rownames(expr_df)
+    
+    # Bind the missing gene columns
+    expr_sub <- cbind(expr_sub, zero_mat)
   }
   
-  # Align columns
-  expr_sub <- expr_sub[ , genes]
-  
-  # Compute score = weighted sum
+  # 3. Reorder columns to match the gene_signature order
+  expr_sub <- expr_sub[, genes]
+
+  # 4. Compute weighted sum (signature score)
   scores <- as.matrix(expr_sub) %*% as.matrix(weights)
-  
+
+  # 5. Return data frame of scores
   return(data.frame(Sample = rownames(expr_df), Score = as.numeric(scores)))
 }
 
-evaluate_signature_performance <- function(score_df, label_col = "response", score_col = "Score", plot = TRUE) {
-  library(pROC)
-  library(caret)
-  library(ggplot2)
-  library(dplyr)
+# ---- 12.3 ML Pipeline ----
+
+view_compare_ml <- function(deres_list, tissue="pancreas", methods=NULL) {
+  merged_dataset <- merge_datasets(deres_list, tissue=tissue)
+  ml_df <- prepare_ml_data(merged_dataset, use_matrisome = TRUE)
   
-  # Drop rows with missing response or score
-  score_df <- score_df %>% filter(!is.na(.data[[label_col]]), !is.na(.data[[score_col]]))
+  # model comparison
+  model_results <- compare_ml_models(ml_df)
   
-  response <- factor(score_df[[label_col]], levels = c("nonresponder", "responder"))
-  score <- score_df[[score_col]]
+  # visualise
+  plot_model_aucs(model_results)
   
-  # ROC + AUC
-  roc_obj <- roc(response = response, predictor = score)
-  auc_val <- auc(roc_obj)
+  # get top features
+  top_features_list <- extract_model_features(model_results, top_n = 60, plot=TRUE)
   
-  # Optimal threshold
-  coords_opt <- coords(roc_obj, "best", best.method = "youden", transpose = FALSE)
-  opt_threshold <- coords_opt["threshold"]
+  merge_features_df <- lapply(top_features_list, function(df) {
+    df <- df[, c("Model", "Feature")]  # Keep only necessary columns (optional)
+    names(df)[names(df) == "Model"] <- "term"
+    names(df)[names(df) == "Feature"] <- "gene"
+    return(df)
+  })
+  merged_features <- do.call(rbind, merge_features_df)
   
-  # Predictions based on threshold
-  predicted <- ifelse(score > opt_threshold, "responder", "nonresponder")
-  predicted <- factor(predicted, levels = c("nonresponder", "responder"))
-  
-  # Ensure matching length
-  valid_idx <- complete.cases(response, predicted)
-  response <- response[valid_idx]
-  predicted <- predicted[valid_idx]
-  
-  cm <- confusionMatrix(predicted, response)
-  
-  metrics <- data.frame(
-    Accuracy = cm$overall["Accuracy"],
-    Precision = cm$byClass["Pos Pred Value"],
-    Recall = cm$byClass["Sensitivity"],
-    Specificity = cm$byClass["Specificity"],
-    F1 = 2 * ((cm$byClass["Sensitivity"] * cm$byClass["Pos Pred Value"]) /
-                (cm$byClass["Sensitivity"] + cm$byClass["Pos Pred Value"]))
-  )
-  
-  if (plot) {
-    # ROC plot
-    plot(roc_obj, col = "blue", lwd = 2, main = "ROC Curve - Gene Signature")
-    legend("bottomright", legend = paste("AUC =", round(auc_val, 3)), col = "blue", lwd = 2)
-    
-    # Confusion plot
-    score_df$Predicted <- predicted
-    ggplot(score_df, aes(x = .data[[label_col]], fill = Predicted)) +
-      geom_bar(position = "dodge") +
-      labs(title = "True vs Predicted Classes",
-           x = "True Label", y = "Count") +
-      theme_minimal() +
-      scale_fill_manual(values = c("firebrick", "steelblue")) -> p
-    print(p)
-  }
-  
-  return(list(
-    auc = auc_val,
-    threshold = opt_threshold,
-    confusion_matrix = cm,
-    metrics = metrics,
-    roc = roc_obj,
-    predicted = predicted
-  ))
+  plot_custom_gsea_combined(deres_list, merged_features)
+  return(merged_features)
 }
 
-# ---- 12. Other Useful Functions  ----
+signature_finder <- function(deres_list, method="caret", tissue="all") {
+  # 1. prepare data
+  merged_dataset <- merge_datasets(deres_list, tissue = tissue)
+  ml_df <- prepare_ml_data(merged_dataset, TRUE)
+  
+  # 2. build signature
+  if (method=="caret") sig_res <- caret_gene_signature(ml_df)
+  else sig_res <- glmnet_gene_signature(ml_df)
+  
+  # 3. apply to train data
+  train_scores <- apply_gene_signature(ml_df[ , -which(names(ml_df) == "response")], sig_res)
+  train_scores$Z <- scale(train_scores$Score)
+  
+  # 4. visualise scores
+  train_scores$response <- ml_df$response
+  
+  ggplot(train_scores, aes(x = Z, fill = response)) +
+    geom_density(alpha = 0.5) 
+  
+  roc_obj <- roc(train_scores$response, train_scores$Score)
+  auc_val <- auc(roc_obj)
+  
+  return(list(train_scores=train_scores, 
+              train_counts=merged_dataset$counts,
+              train_metadata=merged_dataset$metadata, 
+              signature=sig_res, auc=auc_val))
+}
 
+signature_applier <- function(test_counts, test_metadata, signature_data, method="not_batch") {
+  test_metadata <- test_metadata %>% select(response, batch)
+  
+  if (method=="batch") test_scores <- prepare_new_data_batch(test_counts, test_metadata,
+                                                             signature_data$train_counts,
+                                                             signature_data$train_metadata)
+  else test_scores <- prepare_new_data(test_counts) %>% t() %>% as.data.frame()
+  test_scores <- test_scores %>% apply_gene_signature(gene_signature = signature_data$signature)
+  
+  train_scores <- signature_data$train_scores
+  mean_train <- mean(train_scores$Score)
+  sd_train   <- sd(train_scores$Score)
+  
+  test_scores$Z <- (test_scores$Score - mean_train) / sd_train
+  
+  test_metadata$Sample <- rownames(test_metadata)
+  test_metadata <- left_join(test_metadata, test_scores, by = "Sample") 
+  test_metadata %>% select(Sample, response, Score, Z)
+  test_scores <- left_join(test_scores, test_metadata[, c("Sample", "response")], by = "Sample")
+  
+  train_plot <- ggplot(train_scores, aes(x = Z, fill = response)) +
+    geom_vline(xintercept = mean(train_scores$Z), linetype = "dashed") +
+    geom_density(alpha = 0.5) +
+    ggtitle("Train data")
+  
+  test_plot <- ggplot(test_metadata, aes(x = Z, fill = response)) +
+    geom_vline(xintercept = mean(train_scores$Z), linetype = "dashed") +
+    geom_density(alpha = 0.5) +
+    ggtitle("Test Data")
+  
+  roc_obj <- roc(test_scores$response, test_scores$Score)
+  auc_val <- auc(roc_obj)
+  
+  print(auc_val)
+  plot(ggarrange(train_plot, test_plot))
+  
+  return(train_scores)
+}
 
+signature_self_validate <- function(deres_list, tissue="all") {
+  set.seed(42)
+  
+  merged_dataset <- merge_datasets(deres_list, tissue = tissue)
+  ml_df <- prepare_ml_data(merged_dataset, TRUE)
+  
+  trainIndex <- createDataPartition(ml_df$response, p = 0.7, list = FALSE)
+  train <- ml_df[trainIndex, ]
+  test <- ml_df[-trainIndex, ]
+  
+  sig_res <- caret_gene_signature(train)
+  
+  train_scores <- apply_gene_signature(train[ , -which(names(train) == "response")], sig_res)
+  train_scores$Z <- scale(train_scores$Score)
+  train_scores$response <- train$response
+  
+  mean_train <- mean(train_scores$Score)
+  sd_train   <- sd(train_scores$Score)
+  
+  test_scores <- apply_gene_signature(test[ , -which(names(test) == "response")], sig_res)
+  test_scores$Z <- (test_scores$Score - mean_train) / sd_train
+  test_scores$response <- test$response
+  
+  train_data <- ggplot(train_scores, aes(x = Z, fill = response)) +
+    geom_density(alpha = 0.5) +
+    ggtitle("Training Dataset")
+  test_data <- ggplot(test_scores, aes(x = Z, fill = response)) +
+    geom_density(alpha = 0.5) +
+    ggtitle("Testing Dataset")
+  
+  plot(ggarrange(train_data, test_data))
+  
+  return(signature=sig_res)
+}
+
+signature_lobo_validate <- function(deres_list, tissue="all") {
+  set.seed(42)
+  
+  merged_dataset <- merge_datasets(deres_list, tissue = tissue)
+  ml_df <- prepare_ml_data(merged_dataset, use_matrisome = TRUE)
+  
+  metadata <- merged_dataset$metadata
+  batches <- unique(metadata$batch)
+  
+  results <- list()
+  
+  for (b in batches) {
+    message("Leaving out batch: ", b)
+    
+    # Identify samples
+    test_ids <- rownames(metadata[metadata$batch == b, ])
+    train_ids <- rownames(metadata[metadata$batch != b, ])
+    
+    train_df <- ml_df[train_ids, ]
+    test_df  <- ml_df[test_ids, ]
+    
+    # Train signature
+    sig <- caret_gene_signature(train_df)
+    
+    # Score training
+    train_scores <- apply_gene_signature(train_df[, -which(names(train_df) == "response")], sig)
+    train_scores$Z <- scale(train_scores$Score)
+    train_scores$response <- train_df$response
+    
+    # Score testing (Z-normalize using train stats)
+    mean_train <- mean(train_scores$Score)
+    sd_train   <- sd(train_scores$Score)
+    
+    test_scores <- apply_gene_signature(test_df[, -which(names(test_df) == "response")], sig)
+    test_scores$Z <- (test_scores$Score - mean_train) / sd_train
+    test_scores$response <- test_df$response
+    
+    # ROC
+    roc_obj <- roc(response = test_scores$response, predictor = test_scores$Score)
+    auc_val <- auc(roc_obj)
+    
+    # Save
+    results[[b]] <- list(
+      batch = b,
+      train_scores = train_scores,
+      test_scores = test_scores,
+      auc = auc_val,
+      roc = roc_obj
+    )
+  }
+  
+  return(results)
+}
+
+plot_lobo_aucs <- function(lobo_results) {
+  aucs <- sapply(lobo_results, function(x) x$auc)
+  
+  # Barplot AUCs
+  barplot(aucs, beside = TRUE, col = "steelblue",
+          main = "LOBO AUCs per Batch", ylab = "AUC", ylim = c(0, 1))
+}
+
+plot_lobo_results <- function(lobo_results) {
+  plots <- list()
+  
+  for (batch_name in names(lobo_results)) {
+    res <- lobo_results[[batch_name]]
+    train_df <- res$train_scores
+    test_df <- res$test_scores
+    
+    # Train plot
+    p_train <- ggplot(train_df, aes(x = Z, fill = response)) +
+      geom_density(alpha = 0.5) +
+      ggtitle(paste("Train (excluding", batch_name, ")")) +
+      theme_minimal()
+    
+    # Test plot
+    p_test <- ggplot(test_df, aes(x = Z, fill = response)) +
+      geom_density(alpha = 0.5) +
+      ggtitle(paste("Test (batch =", batch_name, ")\nAUC =", round(res$auc, 3))) +
+      theme_minimal()
+    
+    # Arrange side by side
+    plots[[batch_name]] <- ggarrange(p_train, p_test, ncol = 2)
+  }
+  
+  # Combine all arranged plots into a grid
+  final_plot <- ggarrange(plotlist = plots, ncol = 1)
+  return(final_plot)
+}
+
+# ---- 13. Other Useful Functions  ----
 check_valid_data <- function(counts, metadata) {
   print(all(colnames(counts) == rownames(metadata)))
 }
