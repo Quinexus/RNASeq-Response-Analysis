@@ -53,6 +53,8 @@ library(FactoMineR)
 library(factoextra)
 library(glmnet)
 
+library(BiocParallel)
+
 # ---- 1. Load all datasets  ----
 load_rna_dataset <- function(counts, metadata) {
   # check if csv then import
@@ -108,13 +110,17 @@ response_treatment_dds <- function(counts, metadata) {
     # created merged column
     metadata$group <- paste0(tolower(metadata$response), tolower(metadata$treatment))
     
+    response_treatment_validity <- metadata %>%
+      group_by(treatment = tolower(treatment)) %>%
+      summarise(all_same = length(unique(tolower(response))) != 1) %>%
+      deframe()
+    
     # dds for UNTREATED response vs nonresponse
-    untreated_dds <- prepare_dds(counts, metadata, ~group, "nonresponderuntreated")
-    dds_list$untreated <- untreated_dds
+    if(response_treatment_validity["untreated"]) dds_list$untreated <- prepare_dds(counts, metadata, ~group, "nonresponderuntreated")
     
     # dds for TREATED response vs nonresponse
-    treated_dds <- prepare_dds(counts, metadata, ~group, "nonrespondertreated")
-    dds_list$treated <- treated_dds
+    if(response_treatment_validity["treated"]) dds_list$treated <- prepare_dds(counts, metadata, ~group, "nonrespondertreated")
+    
   }
   message("dds objects prepared!")
   return(dds_list)
@@ -377,10 +383,12 @@ response_analysis <- function(name, counts, metadata, species="human", annotatio
   deres_list <- list()
   deres_list$response <- run_deseq(dds_list$response)
   if (any(grepl("^treatment$", colnames(metadata) %>% tolower()))) {
-    deres_list$untreated <- run_deseq(dds_list$untreated, "group_responderuntreated_vs_nonresponderuntreated")
-    deres_list$treated <- run_deseq(dds_list$treated, "group_respondertreated_vs_nonrespondertreated")
+    if("untreated" %in% names(dds_list)) deres_list$untreated <- run_deseq(dds_list$untreated, "group_responderuntreated_vs_nonresponderuntreated")
+    if("treated" %in% names(dds_list)) deres_list$treated <- run_deseq(dds_list$treated, "group_respondertreated_vs_nonrespondertreated")
   }
   message("Finished running DESeq2")
+  
+  names_deres_list <- names(deres_list)
   
   # 4. annotate res and add other metadata
   deres_list <- lapply(names(deres_list), function(deres_name) {
@@ -404,6 +412,7 @@ response_analysis <- function(name, counts, metadata, species="human", annotatio
     
     return(deres)
   })
+  names(deres_list) <- names_deres_list
   
   message("Annotated results")
   
@@ -642,7 +651,7 @@ dotplot_pathways <- function(gseaRes, plot=TRUE, save=FALSE, save_name=NULL) {
   plot_or_save(pathways_dotplot, deres, plot, save, save_name, "pathways")
 }
 
-ssGSEA_score <- function(counts, metadata, gene_list) {
+ssGSEA_score <- function(counts, metadata, gene_list, plot=TRUE) {
   gene_sets <- gene_list %>% group_by(term) %>% 
     summarise(genes = list(unique(gene))) %>% deframe()
   
@@ -664,12 +673,95 @@ ssGSEA_score <- function(counts, metadata, gene_list) {
   ssgsea_df <- ssgsea_df %>%
     left_join(metadata, by = "sample")
   
-  ggplot(ssgsea_df, aes(x = response, y = ssgsea_score, fill = response)) +
+  score_plot <- ggplot(ssgsea_df, aes(x = response, y = ssgsea_score, fill = response)) +
     geom_boxplot() +
     facet_wrap(~ model, scales = "free_y") +
     theme_minimal() +
     labs(title = "ssGSEA scores") + 
     stat_compare_means()
+  
+  if(plot) plot(score_plot)
+  
+  return(ssgsea_scores)
+}
+
+bagaev_clustering <- function(merged_dataset) {
+  set.seed(42)
+  
+  # Load and Format Gene Sets
+  bagaev_sets <- read.csv("~/Repos/RNASeq Pipeline/bagaev.csv", skip = 1) %>%
+    rename(term = Gene.signature, gene = Gene)
+  
+  # Batch correct
+  combat_corr <- combat_correction(merged_dataset)
+  
+  # ssGSEA scoring
+  ssgsea_bagaev_score <- ssGSEA_score(
+    combat_corr$expr,
+    combat_corr$metadata,
+    bagaev_sets,
+    plot = FALSE
+  )
+  
+  # prepare plot
+  ## row groups
+  row_groups <- setNames(bagaev_sets$Signature.Cluster, bagaev_sets$term)
+  matched_groups <- row_groups[rownames(ssgsea_bagaev_score)]
+  
+  desired_row_group_order <- c(
+    "Angiogenesis/Fibroblasts",
+    "Pro-tumor/Immune infiltrate",
+    "Anti-tumor/Immune infiltrate",
+    "EMT signature/proliferation rate"
+  )
+  
+  row_group_factor <- factor(
+    matched_groups,
+    levels = desired_row_group_order
+  )
+  
+  ## colgroups
+  cluster_metadata$response <- factor(cluster_metadata$response)
+  
+  ann_colors <- list(
+    response = c("responder" = "forestgreen", "nonresponder" = "firebrick")
+  )
+  
+  top_anno <- HeatmapAnnotation(
+    response = cluster_metadata$response,
+    batch = cluster_metadata$batch,
+    col = ann_colors,
+    annotation_legend_param = list(
+      response = list(title = "Response")
+    )
+  )
+  
+  ## heatmap
+  ssgsea_scaled <- t(scale(t(ssgsea_bagaev_score)))
+  
+  ssgsea_scaled_clean <- ssgsea_scaled
+  for (i in 1:nrow(ssgsea_scaled_clean)) {
+    if (anyNA(ssgsea_scaled_clean[i, ])) {
+      ssq_row <- ssgsea_scaled_clean[i, ]
+      ssq_row[is.na(ssq_row)] <- mean(ssq_row, na.rm = TRUE)
+      ssgsea_scaled_clean[i, ] <- ssq_row
+    }
+  }
+  
+  Heatmap(
+    ssgsea_scaled_clean,
+    name = "Z-score",
+    top_annotation = top_anno,
+    row_split = row_group_factor,
+    cluster_columns = TRUE,
+    column_km = 4,
+    cluster_rows = FALSE,
+    row_title_gp = gpar(fontsize = 9, fontface = "bold"),
+    row_names_gp = gpar(fontsize = 8),
+    column_names_gp = gpar(fontsize = 6),
+    show_column_names = TRUE,
+    heatmap_legend_param = list(title = "Z-score", color_bar = "continuous")
+  )
 }
 
 # ---- 7. Bulk Deconvolution  ----
@@ -1489,7 +1581,12 @@ merge_datasets <- function(deres_list, tissue="pancreas") {
   required_deres <- list()
   # get required datasets
   for (i in seq_along(deres_list)) {
-    deres <- deres_list[[i]][[1]]
+    deres <- deres_list[[i]]
+    if ("untreated" %in% names(deres)) {
+      deres <- deres$untreated
+    } else {
+      deres <- deres$response
+    }
     
     if (deres$species == "human") {
       if (tissue == "all" || deres$tissue == tissue) required_deres[[deres$name]] <- deres
@@ -1547,7 +1644,10 @@ merged_de <- function(deres_list, tissue="pancreas") {
 # batch correct vsd
 combat_correction <- function(merged_dataset) {
   # Normalise and Log transform
-  raw_counts <- merged_dataset$counts
+  raw_counts <- merged_dataset$counts %>% annotate_df()
+  raw_counts <- raw_counts[!is.na(raw_counts$gene_name), ]
+  rownames(raw_counts) <- make.unique(as.character(raw_counts$gene_name))
+  raw_counts$gene_name <- NULL
   
   # Compute library sizes and CPM
   lib_sizes <- colSums(raw_counts)
@@ -1558,6 +1658,7 @@ combat_correction <- function(merged_dataset) {
   log2_cpm <- as.matrix(log2_cpm)
   
   # Batch Correction
+  BiocParallel::register(SerialParam())
   mod <- model.matrix(~ response, data = merged_dataset$metadata)
   combat_expr <- ComBat(dat = log2_cpm, batch = merged_dataset$metadata$batch, mod = mod)
   
@@ -1630,10 +1731,27 @@ merged_filter_matrisome <- function(expr) {
 }
 
 # transpose vsd for ml packages
-prepare_ml_data <- function(merged_dataset, use_matrisome=FALSE) {
+prepare_ml_data <- function(merged_dataset, use_matrisome=FALSE, top_n = 1000, use_mads=TRUE) {
   cor_data <- combat_correction(merged_dataset)
   
   if(isTRUE(use_matrisome)) {cor_data$expr <- cor_data$expr %>% merged_filter_matrisome()}
+  else {
+    # Select top N most variable genes using MAD or variance
+    if (use_mads) {
+      gene_mads <- apply(cor_data$expr, 1, mad)
+      top_genes <- names(sort(gene_mads, decreasing = TRUE))[1:top_n]
+    } else {
+      gene_vars <- apply(cor_data$expr, 1, var)
+      top_genes <- names(sort(gene_vars, decreasing = TRUE))[1:top_n]
+    }
+    cor_data$expr <- cor_data$expr[top_genes, ]
+    
+    cor_data$expr <- cor_data$expr %>% as.data.frame() %>% annotate_df("annodbi", "human")
+    cor_data$expr <- cor_data$expr[!duplicated(cor_data$expr$gene_name), ]
+    
+    rownames(cor_data$expr) <- cor_data$expr$gene_name
+    cor_data$expr$gene_name <- NULL
+  }
   
   df <- as.data.frame(t(cor_data$expr))  # samples as rows
   df$response <- as.factor(cor_data$metadata$response)
@@ -1687,6 +1805,8 @@ compare_ml_models <- function(df, models = c("rf", "svmRadial", "glmnet"),
                               tuneLength = 5, seed = 42) {
   set.seed(seed)
   
+  df$response <- factor(df$response, levels = c("nonresponder", "responder"))
+  
   trainIndex <- createDataPartition(df$response, p = 0.7, list = FALSE)
   train <- df[trainIndex, ]
   test <- df[-trainIndex, ]
@@ -1700,8 +1820,10 @@ compare_ml_models <- function(df, models = c("rf", "svmRadial", "glmnet"),
   for (model in models) {
     message("Training model: ", model)
     
-    fit <- train(response ~ ., data = train, method = model,
+    if(model == "nnet") fit <- train(response ~ ., data = train, method = model,
                  trControl = trctrl, metric = "ROC", tuneLength = tuneLength)
+    else fit <- train(response ~ ., data = train, method = model,
+                      trControl = trctrl, metric = "ROC", tuneLength = tuneLength, preProcess = c("center", "scale"))
     
     pred <- predict(fit, newdata = test)
     prob <- predict(fit, newdata = test, type = "prob")
@@ -1748,7 +1870,8 @@ extract_model_features <- function(model_results, top_n = 20, plot = TRUE) {
     
     top_df <- importance_df %>%
       arrange(desc(Overall)) %>%
-      head(top_n)
+      head(top_n) %>%
+      filter(Overall > 0)
     
     top_df$Model <- model_name
     all_features[[model_name]] <- top_df
@@ -1767,30 +1890,34 @@ extract_model_features <- function(model_results, top_n = 20, plot = TRUE) {
   return(all_features)
 }
 
-# ---- 12.2 ML Gene Signatures ----
-glmnet_gene_signature <- function(df, seed = 42) {
-  set.seed(seed)
+view_compare_ml <- function(deres_list, use_matrisome=TRUE, tissue="pancreas",
+                            no_features=60) {
+  merged_dataset <- merge_datasets(deres_list, tissue=tissue)
+  ml_df <- prepare_ml_data(merged_dataset, use_matrisome = use_matrisome)
   
-  x <- as.matrix(df[ , !colnames(df) %in% "response"])
-  y <- as.factor(df$response)
-  y_bin <- ifelse(y == "responder", 1, 0)
+  # model comparison
+  model_results <- compare_ml_models(ml_df)
   
-  # Fit LASSO model (logistic regression with L1 penalty)
-  cvfit <- cv.glmnet(x, y_bin, family = "binomial", alpha = 1)
+  # visualise
+  plot_model_aucs(model_results)
   
-  # Extract coefficients at lambda.1se (simpler model)
-  coefs <- coef(cvfit, s = "lambda.min")
-  coef_df <- as.data.frame(as.matrix(coefs))
-  coef_df$Gene <- rownames(coef_df)
-  colnames(coef_df)[1] <- "Weight"
+  # get top features
+  top_features_list <- extract_model_features(model_results, top_n = no_features, plot=TRUE)
   
-  # Filter non-zero coefficients (excluding intercept)
-  gene_signature <- coef_df %>%
-    filter(Weight != 0 & Gene != "(Intercept)")
+  merge_features_df <- lapply(top_features_list, function(df) {
+    df <- df[, c("Model", "Feature")]  # Keep only necessary columns (optional)
+    names(df)[names(df) == "Model"] <- "term"
+    names(df)[names(df) == "Feature"] <- "gene"
+    return(df)
+  })
+  merged_features <- do.call(rbind, merge_features_df)
   
-  return(gene_signature)
+  plot_custom_gsea_combined(deres_list, merged_features)
+  return(merged_features)
 }
 
+# ---- 12.2 ML Gene Signatures ----
+# create gene signature using caret
 caret_gene_signature <- function(df, seed=42) {
   set.seed(seed)
   
@@ -1838,138 +1965,166 @@ caret_gene_signature <- function(df, seed=42) {
   return(gene_signature)
 }
 
-
-apply_gene_signature <- function(expr_df, gene_signature) {
-  genes <- gene_signature$Gene
-  weights <- gene_signature$Weight
-  
-  
-   # 1. Identify missing genes
-  missing_genes <- setdiff(genes, colnames(expr_df))
-  
-  # 2. Create a full matrix with all genes in the signature
-  #    Fill missing genes with zeros
-  expr_sub <- expr_df[, intersect(genes, colnames(expr_df)), drop = FALSE]
-  
-  if (length(missing_genes) > 0) {
-    # Create a matrix of zeros with same number of rows and missing gene columns
-    zero_mat <- matrix(0, nrow = nrow(expr_df), ncol = length(missing_genes))
-    colnames(zero_mat) <- missing_genes
-    rownames(zero_mat) <- rownames(expr_df)
-    
-    # Bind the missing gene columns
-    expr_sub <- cbind(expr_sub, zero_mat)
-  }
-  
-  # 3. Reorder columns to match the gene_signature order
-  expr_sub <- expr_sub[, genes]
-
-  # 4. Compute weighted sum (signature score)
-  scores <- as.matrix(expr_sub) %*% as.matrix(weights)
-
-  # 5. Return data frame of scores
-  return(data.frame(Sample = rownames(expr_df), Score = as.numeric(scores)))
-}
-
-# ---- 12.3 ML Pipeline ----
-
-view_compare_ml <- function(deres_list, tissue="pancreas", methods=NULL) {
-  merged_dataset <- merge_datasets(deres_list, tissue=tissue)
-  ml_df <- prepare_ml_data(merged_dataset, use_matrisome = TRUE)
-  
-  # model comparison
-  model_results <- compare_ml_models(ml_df)
-  
-  # visualise
-  plot_model_aucs(model_results)
-  
-  # get top features
-  top_features_list <- extract_model_features(model_results, top_n = 60, plot=TRUE)
-  
-  merge_features_df <- lapply(top_features_list, function(df) {
-    df <- df[, c("Model", "Feature")]  # Keep only necessary columns (optional)
-    names(df)[names(df) == "Model"] <- "term"
-    names(df)[names(df) == "Feature"] <- "gene"
-    return(df)
-  })
-  merged_features <- do.call(rbind, merge_features_df)
-  
-  plot_custom_gsea_combined(deres_list, merged_features)
-  return(merged_features)
-}
-
-signature_finder <- function(deres_list, method="caret", tissue="all") {
-  # 1. prepare data
+signature_finder <- function(deres_list, tissue="all", use_matrisome = TRUE) {
   merged_dataset <- merge_datasets(deres_list, tissue = tissue)
-  ml_df <- prepare_ml_data(merged_dataset, TRUE)
+  ml_df <- prepare_ml_data(merged_dataset, use_matrisome)
+  signature <- caret_gene_signature(ml_df)
+  
+  return(signature)
+}
+
+# apply various calculated signatures
+signature_applier <- function(signature, raw_counts, metadata=NULL) {
+  prepped_counts <- prepare_new_annotated_data(raw_counts)
+  positive_genes <- signature %>% filter(Weight > 0)
+  negative_genes <- signature %>% filter(Weight < 0)
+  
+  # coef method
+  coef_weights <- signature %>% filter(Gene %in% rownames(prepped_counts))
+  coef_scores <- colSums(prepped_counts[coef_weights$Gene, , drop = FALSE] * coef_weights$Weight)
+  
+  # mean diff
+  pos_means <- colMeans(prepped_counts[positive_genes$Gene, , drop = FALSE], na.rm = TRUE)
+  neg_means <- colMeans(prepped_counts[negative_genes$Gene, , drop = FALSE], na.rm = TRUE)
+  mean_diff <- pos_means - neg_means
+  
+  # mean ratio
+  mean_ratio <- pos_means / neg_means
+  
+  # log-ratio
+  log_ratio <- log2(pos_means + 1) - log2(neg_means + 1)
+  
+  # ssgsea
+  gene_sets <- list(sig_pos=positive_genes$Gene, sig_neg=negative_genes$Gene)
+  ssgsea <- ssgseaParam(prepped_counts %>% as.matrix(), gene_sets, 
+                        minSize = 1, maxSize = Inf,
+                        alpha = 0.25, normalize = TRUE)
+  ssgsea_scores <- gsva(ssgsea, verbose = TRUE) %>% t() %>% as.data.frame() %>%
+    rownames_to_column("sample") %>% pivot_longer(-sample, names_to = "direction", values_to = "ssgsea_score")
+  ssgsea_pos <- ssgsea_scores %>% filter(direction == "sig_pos")
+  ssgsea_neg <- ssgsea_scores %>% filter(direction == "sig_neg")
+  ssgsea_sig_score <- ssgsea_pos$ssgsea_score - ssgsea_neg$ssgsea_score
+  
+  score_df <- data.frame(
+    sample = colnames(prepped_counts),
+    coef = coef_scores,
+    mean_diff = mean_diff,
+    mean_ratio = mean_ratio,
+    log_ratio = log_ratio,
+    ssgsea = ssgsea_sig_score
+  )
+  if(!is.null(metadata)) score_df$response <- metadata$response
+  
+  return(score_df)
+}
+
+# view clusterprofiler plots of signature datasets
+signature_dotplot <- function(signature, deres_list) {
+  # include direction
+  direction_features <- signature
+  direction_features$term <- ifelse(direction_features$Weight > 0, "Signature_Positive", "Signature_Negative")
+  direction_features$gene <- direction_features$Gene
+  direction_features <- direction_features %>% select(term, gene)
+  
+  # include all
+  all_features <- signature
+  all_features$term <- "Signature_All"
+  all_features$gene <- all_features$Gene
+  all_features <- all_features %>% select(term, gene)
+  
+  # combine
+  required_features <- rbind(direction_features, all_features)
+  
+  # dotplot
+  plot_custom_gsea_combined(deres_list, required_features)
+}
+
+# view all types of signatures calculated
+view_signatures <- function(signature, counts, metadata = NULL) {
+  signs_plot <- signature_applier(signature, counts, metadata) %>%
+    pivot_longer(cols = -c(sample, response), names_to = "method", values_to = "score") %>% 
+    ggplot(aes(x = score, fill = response)) + 
+    facet_wrap(vars(method)) + 
+    geom_density(alpha = 0.5)
+  
+  return(signs_plot)
+}
+
+
+# ---- 12.3 Depreciated ML methods ----
+glmnet_gene_signature <- function(df, seed = 42) {
+  set.seed(seed)
+  
+  x <- as.matrix(df[ , !colnames(df) %in% "response"])
+  y <- as.factor(df$response)
+  y_bin <- ifelse(y == "responder", 1, 0)
+  
+  # Fit LASSO model (logistic regression with L1 penalty)
+  cvfit <- cv.glmnet(x, y_bin, family = "binomial", alpha = 1)
+  
+  # Extract coefficients at lambda.1se (simpler model)
+  coefs <- coef(cvfit, s = "lambda.min")
+  coef_df <- as.data.frame(as.matrix(coefs))
+  coef_df$Gene <- rownames(coef_df)
+  colnames(coef_df)[1] <- "Weight"
+  
+  # Filter non-zero coefficients (excluding intercept)
+  gene_signature <- coef_df %>%
+    filter(Weight != 0 & Gene != "(Intercept)")
+  
+  return(gene_signature)
+}
+
+compare_sig_pipeline <- function(deres_list, use_matrisome = TRUE, 
+                               test_counts, test_metadata) {
+  # 1. prepare data
+  merged_dataset <- merge_datasets(deres_list)
+  ml_df <- prepare_ml_data(merged_dataset, use_matrisome)
   
   # 2. build signature
   if (method=="caret") sig_res <- caret_gene_signature(ml_df)
   else sig_res <- glmnet_gene_signature(ml_df)
   
   # 3. apply to train data
-  train_scores <- apply_gene_signature(ml_df[ , -which(names(ml_df) == "response")], sig_res)
-  train_scores$Z <- scale(train_scores$Score)
+  train_scores <- signature_applier(sig_res, merged_dataset$counts, merged_dataset$metadata) %>% select(sample, coef, response)
   
-  # 4. visualise scores
-  train_scores$response <- ml_df$response
+  train_scores$Z <- scale(train_scores$coef)
   
-  ggplot(train_scores, aes(x = Z, fill = response)) +
-    geom_density(alpha = 0.5) 
+  mean_train <- mean(train_scores$coef)
+  sd_train   <- sd(train_scores$coef)
   
-  roc_obj <- roc(train_scores$response, train_scores$Score)
-  auc_val <- auc(roc_obj)
+  train_roc_obj <- roc(train_scores$response, train_scores$coef)
+  train_auc_val <- auc(train_roc_obj)
   
-  return(list(train_scores=train_scores, 
-              train_counts=merged_dataset$counts,
-              train_metadata=merged_dataset$metadata, 
-              signature=sig_res, auc=auc_val))
-}
+  # if (method=="batch") test_scores <- prepare_new_data_batch(test_counts, test_metadata, signature_data$train_counts, signature_data$train_metadata)
 
-signature_applier <- function(test_counts, test_metadata, signature_data, method="not_batch") {
-  test_metadata <- test_metadata %>% select(response, batch)
+  test_scores <- signature_applier(signature_data$signature, test_counts, test_metadata) %>% select(sample, coef, response)
   
-  if (method=="batch") test_scores <- prepare_new_data_batch(test_counts, test_metadata,
-                                                             signature_data$train_counts,
-                                                             signature_data$train_metadata)
-  else test_scores <- prepare_new_data(test_counts) %>% t() %>% as.data.frame()
-  test_scores <- test_scores %>% apply_gene_signature(gene_signature = signature_data$signature)
-  
-  train_scores <- signature_data$train_scores
-  mean_train <- mean(train_scores$Score)
-  sd_train   <- sd(train_scores$Score)
-  
-  test_scores$Z <- (test_scores$Score - mean_train) / sd_train
-  
-  test_metadata$Sample <- rownames(test_metadata)
-  test_metadata <- left_join(test_metadata, test_scores, by = "Sample") 
-  test_metadata %>% select(Sample, response, Score, Z)
-  test_scores <- left_join(test_scores, test_metadata[, c("Sample", "response")], by = "Sample")
+  test_scores$Z <- (test_scores$coef - mean_train) / sd_train
   
   train_plot <- ggplot(train_scores, aes(x = Z, fill = response)) +
     geom_vline(xintercept = mean(train_scores$Z), linetype = "dashed") +
     geom_density(alpha = 0.5) +
     ggtitle("Train data")
   
-  test_plot <- ggplot(test_metadata, aes(x = Z, fill = response)) +
+  test_plot <- ggplot(test_scores, aes(x = Z, fill = response)) +
     geom_vline(xintercept = mean(train_scores$Z), linetype = "dashed") +
     geom_density(alpha = 0.5) +
     ggtitle("Test Data")
   
-  roc_obj <- roc(test_scores$response, test_scores$Score)
-  auc_val <- auc(roc_obj)
+  test_roc_obj <- roc(test_scores$response, test_scores$coef)
+  test_auc_val <- auc(test_roc_obj)
   
-  print(auc_val)
   plot(ggarrange(train_plot, test_plot))
-  
-  return(train_scores)
+
+  return(train_auc_val, test_auc_val)
 }
 
-signature_self_validate <- function(deres_list, tissue="all") {
+signature_self_validate <- function(deres_list, tissue="all", use_matrisome=TRUE) {
   set.seed(42)
   
   merged_dataset <- merge_datasets(deres_list, tissue = tissue)
-  ml_df <- prepare_ml_data(merged_dataset, TRUE)
+  ml_df <- prepare_ml_data(merged_dataset, use_matrisome)
   
   trainIndex <- createDataPartition(ml_df$response, p = 0.7, list = FALSE)
   train <- ml_df[trainIndex, ]
@@ -1978,6 +2133,7 @@ signature_self_validate <- function(deres_list, tissue="all") {
   sig_res <- caret_gene_signature(train)
   
   train_scores <- apply_gene_signature(train[ , -which(names(train) == "response")], sig_res)
+  
   train_scores$Z <- scale(train_scores$Score)
   train_scores$response <- train$response
   
@@ -2000,11 +2156,11 @@ signature_self_validate <- function(deres_list, tissue="all") {
   return(signature=sig_res)
 }
 
-signature_lobo_validate <- function(deres_list, tissue="all") {
+signature_lobo_validate <- function(deres_list, tissue="all", use_matrisome=TRUE) {
   set.seed(42)
   
   merged_dataset <- merge_datasets(deres_list, tissue = tissue)
-  ml_df <- prepare_ml_data(merged_dataset, use_matrisome = TRUE)
+  ml_df <- prepare_ml_data(merged_dataset, use_matrisome = use_matrisome)
   
   metadata <- merged_dataset$metadata
   batches <- unique(metadata$batch)
@@ -2047,7 +2203,8 @@ signature_lobo_validate <- function(deres_list, tissue="all") {
       train_scores = train_scores,
       test_scores = test_scores,
       auc = auc_val,
-      roc = roc_obj
+      roc = roc_obj,
+      signature = sig
     )
   }
   

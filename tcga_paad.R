@@ -99,20 +99,16 @@ plot_survivals <- function(gene_list) {
 }
 
 # signature score survival
-plot_survival_signature <- function(signature) {
+plot_survival_signature <- function(signature, method="coef") {
   expr_data <- load_data() %>% assay() %>% as.data.frame()
   
   # get score
-  score <- expr_data %>% prepare_new_data() %>% annotate_df()
-  score <- score[!is.na(score$gene_name), ]
-  rownames(score) <- make.unique(as.character(score$gene_name))
-  score$gene_name <- NULL
-  score <- score %>% t() %>% apply_gene_signature(gene_signature = signature)
+  score <- signature_applier(signature, expr_data)
   
   clinical <- load_data() %>% colData()
   
   # set expression group
-  expr_group <- ifelse(score$Score > median(score$Score, na.rm=TRUE), "High", "Low")
+  expr_group <- ifelse(score[[method]] > median(score[[method]], na.rm=TRUE), "High", "Low")
   
   # get survival data
   surv_df <- clinical %>% as.data.frame()
@@ -361,20 +357,25 @@ nmf_pathway_analysis <- function(limma_res){
   
   # Perform GSEA analysis
   GSEA_res<-list()
+  msigdb_sets <- msigdbr(species = "human", collection = "H")
+  msigdbr_t2g <- dplyr::distinct(msigdb_sets, gs_name, gene_symbol)
+  
   for (i in 1:no_of_clusters) {
     set.seed(55)
-    gse <- gseGO(geneList=gene_lists[[i]], 
-                 ont ="ALL", 
-                 keyType = "SYMBOL", 
-                 nPerm = 1000, 
-                 minGSSize = 3, 
-                 maxGSSize = 800, 
-                 pvalueCutoff = 0.05, 
-                 verbose = TRUE, 
-                 OrgDb = "org.Hs.eg.db", 
-                 pAdjustMethod = "none")
+    #gse <- gseGO(geneList=gene_lists[[i]], 
+    #             ont ="ALL", 
+    #             keyType = "SYMBOL", 
+    #             nPerm = 1000, 
+    #             minGSSize = 3, 
+    #             maxGSSize = 800, 
+    #             pvalueCutoff = 0.05, 
+    #             verbose = TRUE, 
+    #             OrgDb = "org.Hs.eg.db", 
+    #             pAdjustMethod = "none")
     
-    GSEA_res<-append(GSEA_res,gse)
+    gseaRes <- GSEA(gene_lists[[i]], TERM2GENE = msigdbr_t2g, pvalueCutoff = 0.05)
+    
+    GSEA_res<-append(GSEA_res, gseaRes)
   }
   
   return(GSEA_res)

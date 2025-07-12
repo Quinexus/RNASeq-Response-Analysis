@@ -1,0 +1,304 @@
+Table S1. The 29 Fges developed for the TME classification platform. Related to Figure 1. ,,
+Gene,Gene signature,Signature Cluster
+ANGPT1,Angiogenesis,Angiogenesis/Fibroblasts
+ANGPT2,Angiogenesis,Angiogenesis/Fibroblasts
+CDH5,Angiogenesis,Angiogenesis/Fibroblasts
+CXCL5,Angiogenesis,Angiogenesis/Fibroblasts
+CXCL8,Angiogenesis,Angiogenesis/Fibroblasts
+CXCR2,Angiogenesis,Angiogenesis/Fibroblasts
+FLT1,Angiogenesis,Angiogenesis/Fibroblasts
+KDR,Angiogenesis,Angiogenesis/Fibroblasts
+PDGFC,Angiogenesis,Angiogenesis/Fibroblasts
+PGF,Angiogenesis,Angiogenesis/Fibroblasts
+TEK,Angiogenesis,Angiogenesis/Fibroblasts
+VEGFA,Angiogenesis,Angiogenesis/Fibroblasts
+VEGFB,Angiogenesis,Angiogenesis/Fibroblasts
+VEGFC,Angiogenesis,Angiogenesis/Fibroblasts
+VWF,Angiogenesis,Angiogenesis/Fibroblasts
+CCL3,Antitumor cytokines,Anti-tumor/Immune infiltrate
+IFNA2,Antitumor cytokines,Anti-tumor/Immune infiltrate
+IFNB1,Antitumor cytokines,Anti-tumor/Immune infiltrate
+IL21,Antitumor cytokines,Anti-tumor/Immune infiltrate
+TNF,Antitumor cytokines,Anti-tumor/Immune infiltrate
+TNFSF10,Antitumor cytokines,Anti-tumor/Immune infiltrate
+BLK,B cells,Anti-tumor/Immune infiltrate
+CD19,B cells,Anti-tumor/Immune infiltrate
+CD22,B cells,Anti-tumor/Immune infiltrate
+CD79A,B cells,Anti-tumor/Immune infiltrate
+CD79B,B cells,Anti-tumor/Immune infiltrate
+CR2,B cells,Anti-tumor/Immune infiltrate
+FCRL5,B cells,Anti-tumor/Immune infiltrate
+MS4A1,B cells,Anti-tumor/Immune infiltrate
+PAX5,B cells,Anti-tumor/Immune infiltrate
+STAP1,B cells,Anti-tumor/Immune infiltrate
+TNFRSF13B,B cells,Anti-tumor/Immune infiltrate
+TNFRSF13C,B cells,Anti-tumor/Immune infiltrate
+TNFRSF17,B cells,Anti-tumor/Immune infiltrate
+ACTA2,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+CD248,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+COL11A1,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+COL1A1,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+COL1A2,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+COL5A1,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+COL6A1,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+COL6A2,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+COL6A3,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+CXCL12,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+FAP,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+FBLN1,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+FGF2,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+FN1,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+LRP1,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+LUM,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+MFAP5,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+MMP2,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+MMP3,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+PDGFRA,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+PDGFRB,Cancer-associated fibroblasts,Angiogenesis/Fibroblasts
+BTLA,Checkpoint molecules,Anti-tumor/Immune infiltrate
+CD274,Checkpoint molecules,Anti-tumor/Immune infiltrate
+CTLA4,Checkpoint molecules,Anti-tumor/Immune infiltrate
+HAVCR2,Checkpoint molecules,Anti-tumor/Immune infiltrate
+LAG3,Checkpoint molecules,Anti-tumor/Immune infiltrate
+PDCD1,Checkpoint molecules,Anti-tumor/Immune infiltrate
+PDCD1LG2,Checkpoint molecules,Anti-tumor/Immune infiltrate
+TIGIT,Checkpoint molecules,Anti-tumor/Immune infiltrate
+VSIR,Checkpoint molecules,Anti-tumor/Immune infiltrate
+CD40LG,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+CD70,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+CD80,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+CD83,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+CD86,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+ICOSLG,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+TNFSF4,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+TNFSF9,Co-stimulatory ligands,Anti-tumor/Immune infiltrate
+CD27,Co-stimulatory receptors,Anti-tumor/Immune infiltrate
+CD28,Co-stimulatory receptors,Anti-tumor/Immune infiltrate
+CD40,Co-stimulatory receptors,Anti-tumor/Immune infiltrate
+ICOS,Co-stimulatory receptors,Anti-tumor/Immune infiltrate
+TNFRSF4,Co-stimulatory receptors,Anti-tumor/Immune infiltrate
+TNFRSF9,Co-stimulatory receptors,Anti-tumor/Immune infiltrate
+CCL3,Effector cell traffic,Anti-tumor/Immune infiltrate
+CCL4,Effector cell traffic,Anti-tumor/Immune infiltrate
+CCL5,Effector cell traffic,Anti-tumor/Immune infiltrate
+CX3CL1,Effector cell traffic,Anti-tumor/Immune infiltrate
+CX3CR1,Effector cell traffic,Anti-tumor/Immune infiltrate
+CXCL10,Effector cell traffic,Anti-tumor/Immune infiltrate
+CXCL11,Effector cell traffic,Anti-tumor/Immune infiltrate
+CXCL9,Effector cell traffic,Anti-tumor/Immune infiltrate
+CXCR3,Effector cell traffic,Anti-tumor/Immune infiltrate
+CD8A,Effector cells,Anti-tumor/Immune infiltrate
+CD8B,Effector cells,Anti-tumor/Immune infiltrate
+EOMES,Effector cells,Anti-tumor/Immune infiltrate
+FASLG,Effector cells,Anti-tumor/Immune infiltrate
+GNLY,Effector cells,Anti-tumor/Immune infiltrate
+GZMA,Effector cells,Anti-tumor/Immune infiltrate
+GZMB,Effector cells,Anti-tumor/Immune infiltrate
+GZMK,Effector cells,Anti-tumor/Immune infiltrate
+IFNG,Effector cells,Anti-tumor/Immune infiltrate
+PRF1,Effector cells,Anti-tumor/Immune infiltrate
+TBX21,Effector cells,Anti-tumor/Immune infiltrate
+ZAP70,Effector cells,Anti-tumor/Immune infiltrate
+CDH5,Endothelium,Angiogenesis/Fibroblasts
+CLEC14A,Endothelium,Angiogenesis/Fibroblasts
+ENG,Endothelium,Angiogenesis/Fibroblasts
+FLT1,Endothelium,Angiogenesis/Fibroblasts
+KDR,Endothelium,Angiogenesis/Fibroblasts
+MMRN1,Endothelium,Angiogenesis/Fibroblasts
+MMRN2,Endothelium,Angiogenesis/Fibroblasts
+NOS3,Endothelium,Angiogenesis/Fibroblasts
+VCAM1,Endothelium,Angiogenesis/Fibroblasts
+VWF,Endothelium,Angiogenesis/Fibroblasts
+CCL11,Granulocyte traffic,Angiogenesis/Fibroblasts
+CCR3,Granulocyte traffic,Angiogenesis/Fibroblasts
+CXCL1,Granulocyte traffic,Angiogenesis/Fibroblasts
+CXCL2,Granulocyte traffic,Angiogenesis/Fibroblasts
+CXCL5,Granulocyte traffic,Angiogenesis/Fibroblasts
+CXCL8,Granulocyte traffic,Angiogenesis/Fibroblasts
+CXCR1,Granulocyte traffic,Angiogenesis/Fibroblasts
+CXCR2,Granulocyte traffic,Angiogenesis/Fibroblasts
+KITLG,Granulocyte traffic,Angiogenesis/Fibroblasts
+ARG1,Immune Suppression by Myeloid Cells,Pro-tumor/Immune infiltrate
+CYBB,Immune Suppression by Myeloid Cells,Pro-tumor/Immune infiltrate
+IDO1,Immune Suppression by Myeloid Cells,Pro-tumor/Immune infiltrate
+IL10,Immune Suppression by Myeloid Cells,Pro-tumor/Immune infiltrate
+IL4I1,Immune Suppression by Myeloid Cells,Pro-tumor/Immune infiltrate
+IL6,Immune Suppression by Myeloid Cells,Pro-tumor/Immune infiltrate
+PTGS2,Immune Suppression by Myeloid Cells,Pro-tumor/Immune infiltrate
+CMKLR1,M1 signature,Anti-tumor/Immune infiltrate
+IL12A,M1 signature,Anti-tumor/Immune infiltrate
+IL12B,M1 signature,Anti-tumor/Immune infiltrate
+IL1B,M1 signature,Anti-tumor/Immune infiltrate
+IL23A,M1 signature,Anti-tumor/Immune infiltrate
+IRF5,M1 signature,Anti-tumor/Immune infiltrate
+NOS2,M1 signature,Anti-tumor/Immune infiltrate
+SOCS3,M1 signature,Anti-tumor/Immune infiltrate
+TNF,M1 signature,Anti-tumor/Immune infiltrate
+CCL2,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+CCL7,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+CCL8,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+CCR2,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+CSF1,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+CSF1R,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+XCL1,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+XCR1,Macrophage and DC traffic,Pro-tumor/Immune infiltrate
+COL11A1,Matrix,Angiogenesis/Fibroblasts
+COL1A1,Matrix,Angiogenesis/Fibroblasts
+COL1A2,Matrix,Angiogenesis/Fibroblasts
+COL3A1,Matrix,Angiogenesis/Fibroblasts
+COL4A1,Matrix,Angiogenesis/Fibroblasts
+COL5A1,Matrix,Angiogenesis/Fibroblasts
+ELN,Matrix,Angiogenesis/Fibroblasts
+FN1,Matrix,Angiogenesis/Fibroblasts
+LAMA3,Matrix,Angiogenesis/Fibroblasts
+LAMB3,Matrix,Angiogenesis/Fibroblasts
+LAMC2,Matrix,Angiogenesis/Fibroblasts
+LGALS7,Matrix,Angiogenesis/Fibroblasts
+LGALS9,Matrix,Angiogenesis/Fibroblasts
+TNC,Matrix,Angiogenesis/Fibroblasts
+VTN,Matrix,Angiogenesis/Fibroblasts
+ADAMTS4,Matrix remodeling,Angiogenesis/Fibroblasts
+ADAMTS5,Matrix remodeling,Angiogenesis/Fibroblasts
+CA9,Matrix remodeling,Angiogenesis/Fibroblasts
+LOX,Matrix remodeling,Angiogenesis/Fibroblasts
+MMP1,Matrix remodeling,Angiogenesis/Fibroblasts
+MMP11,Matrix remodeling,Angiogenesis/Fibroblasts
+MMP12,Matrix remodeling,Angiogenesis/Fibroblasts
+MMP2,Matrix remodeling,Angiogenesis/Fibroblasts
+MMP3,Matrix remodeling,Angiogenesis/Fibroblasts
+MMP7,Matrix remodeling,Angiogenesis/Fibroblasts
+MMP9,Matrix remodeling,Angiogenesis/Fibroblasts
+PLOD2,Matrix remodeling,Angiogenesis/Fibroblasts
+B2M,MHCI,EMT signature/proliferation rate
+HLA-A,MHCI,EMT signature/proliferation rate
+HLA-B,MHCI,EMT signature/proliferation rate
+HLA-C,MHCI,EMT signature/proliferation rate
+NLRC5,MHCI,EMT signature/proliferation rate
+TAP1,MHCI,EMT signature/proliferation rate
+TAP2,MHCI,EMT signature/proliferation rate
+TAPBP,MHCI,EMT signature/proliferation rate
+CIITA,MHCII,Anti-tumor/Immune infiltrate
+HLA-DMA,MHCII,Anti-tumor/Immune infiltrate
+HLA-DMB,MHCII,Anti-tumor/Immune infiltrate
+HLA-DPA1,MHCII,Anti-tumor/Immune infiltrate
+HLA-DPB1,MHCII,Anti-tumor/Immune infiltrate
+HLA-DQA1,MHCII,Anti-tumor/Immune infiltrate
+HLA-DQB1,MHCII,Anti-tumor/Immune infiltrate
+HLA-DRA,MHCII,Anti-tumor/Immune infiltrate
+HLA-DRB1,MHCII,Anti-tumor/Immune infiltrate
+CCL15,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CCL26,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CSF1,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CSF1R,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CSF2,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CSF2RA,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CSF3,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CSF3R,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CXCL12,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CXCL5,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CXCL8,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CXCR2,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CXCR4,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+IL6,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+IL6R,Myeloid cells traffic,Pro-tumor/Immune infiltrate
+CD177,Neutrophil signature,Angiogenesis/Fibroblasts
+CTSG,Neutrophil signature,Angiogenesis/Fibroblasts
+CXCR1,Neutrophil signature,Angiogenesis/Fibroblasts
+CXCR2,Neutrophil signature,Angiogenesis/Fibroblasts
+ELANE,Neutrophil signature,Angiogenesis/Fibroblasts
+FCGR3B,Neutrophil signature,Angiogenesis/Fibroblasts
+FFAR2,Neutrophil signature,Angiogenesis/Fibroblasts
+MPO,Neutrophil signature,Angiogenesis/Fibroblasts
+PGLYRP1,Neutrophil signature,Angiogenesis/Fibroblasts
+PRTN3,Neutrophil signature,Angiogenesis/Fibroblasts
+CD160,NK cells,Anti-tumor/Immune infiltrate
+CD226,NK cells,Anti-tumor/Immune infiltrate
+CD244,NK cells,Anti-tumor/Immune infiltrate
+EOMES,NK cells,Anti-tumor/Immune infiltrate
+FGFBP2,NK cells,Anti-tumor/Immune infiltrate
+GNLY,NK cells,Anti-tumor/Immune infiltrate
+GZMB,NK cells,Anti-tumor/Immune infiltrate
+GZMH,NK cells,Anti-tumor/Immune infiltrate
+IFNG,NK cells,Anti-tumor/Immune infiltrate
+KIR2DL4,NK cells,Anti-tumor/Immune infiltrate
+KLRC2,NK cells,Anti-tumor/Immune infiltrate
+KLRF1,NK cells,Anti-tumor/Immune infiltrate
+KLRK1,NK cells,Anti-tumor/Immune infiltrate
+NCR1,NK cells,Anti-tumor/Immune infiltrate
+NCR3,NK cells,Anti-tumor/Immune infiltrate
+NKG7,NK cells,Anti-tumor/Immune infiltrate
+SH2D1B,NK cells,Anti-tumor/Immune infiltrate
+IL10,Protumor cytokines,Angiogenesis/Fibroblasts
+IL22,Protumor cytokines,Angiogenesis/Fibroblasts
+IL6,Protumor cytokines,Angiogenesis/Fibroblasts
+MIF,Protumor cytokines,Angiogenesis/Fibroblasts
+TGFB1,Protumor cytokines,Angiogenesis/Fibroblasts
+TGFB2,Protumor cytokines,Angiogenesis/Fibroblasts
+TGFB3,Protumor cytokines,Angiogenesis/Fibroblasts
+CD28,T cells,Anti-tumor/Immune infiltrate
+CD3D,T cells,Anti-tumor/Immune infiltrate
+CD3E,T cells,Anti-tumor/Immune infiltrate
+CD3G,T cells,Anti-tumor/Immune infiltrate
+CD5,T cells,Anti-tumor/Immune infiltrate
+ITK,T cells,Anti-tumor/Immune infiltrate
+TBX21,T cells,Anti-tumor/Immune infiltrate
+TRAC,T cells,Anti-tumor/Immune infiltrate
+TRAT1,T cells,Anti-tumor/Immune infiltrate
+TRBC1,T cells,Anti-tumor/Immune infiltrate
+TRBC2,T cells,Anti-tumor/Immune infiltrate
+CD40LG,Th1 signature,Anti-tumor/Immune infiltrate
+IFNG,Th1 signature,Anti-tumor/Immune infiltrate
+IL12RB2,Th1 signature,Anti-tumor/Immune infiltrate
+IL2,Th1 signature,Anti-tumor/Immune infiltrate
+IL21,Th1 signature,Anti-tumor/Immune infiltrate
+STAT4,Th1 signature,Anti-tumor/Immune infiltrate
+TBX21,Th1 signature,Anti-tumor/Immune infiltrate
+CCR4,Th2 signature,Pro-tumor/Immune infiltrate
+IL10,Th2 signature,Pro-tumor/Immune infiltrate
+IL13,Th2 signature,Pro-tumor/Immune infiltrate
+IL4,Th2 signature,Pro-tumor/Immune infiltrate
+IL5,Th2 signature,Pro-tumor/Immune infiltrate
+CCR8,Treg,Pro-tumor/Immune infiltrate
+CTLA4,Treg,Pro-tumor/Immune infiltrate
+FOXP3,Treg,Pro-tumor/Immune infiltrate
+IKZF2,Treg,Pro-tumor/Immune infiltrate
+IKZF4,Treg,Pro-tumor/Immune infiltrate
+IL10,Treg,Pro-tumor/Immune infiltrate
+TNFRSF18,Treg,Pro-tumor/Immune infiltrate
+CCL1,Treg and Th2 traffic,Pro-tumor/Immune infiltrate
+CCL17,Treg and Th2 traffic,Pro-tumor/Immune infiltrate
+CCL22,Treg and Th2 traffic,Pro-tumor/Immune infiltrate
+CCL28,Treg and Th2 traffic,Pro-tumor/Immune infiltrate
+CCR10,Treg and Th2 traffic,Pro-tumor/Immune infiltrate
+CCR4,Treg and Th2 traffic,Pro-tumor/Immune infiltrate
+CCR8,Treg and Th2 traffic,Pro-tumor/Immune infiltrate
+AURKA,Tumor proliferation rate,EMT signature/proliferation rate
+AURKB,Tumor proliferation rate,EMT signature/proliferation rate
+BUB1,Tumor proliferation rate,EMT signature/proliferation rate
+CCNB1,Tumor proliferation rate,EMT signature/proliferation rate
+CCND1,Tumor proliferation rate,EMT signature/proliferation rate
+CCNE1,Tumor proliferation rate,EMT signature/proliferation rate
+CDK2,Tumor proliferation rate,EMT signature/proliferation rate
+CETN3,Tumor proliferation rate,EMT signature/proliferation rate
+E2F1,Tumor proliferation rate,EMT signature/proliferation rate
+ESCO2,Tumor proliferation rate,EMT signature/proliferation rate
+MCM2,Tumor proliferation rate,EMT signature/proliferation rate
+MCM6,Tumor proliferation rate,EMT signature/proliferation rate
+MKI67,Tumor proliferation rate,EMT signature/proliferation rate
+MYBL2,Tumor proliferation rate,EMT signature/proliferation rate
+PLK1,Tumor proliferation rate,EMT signature/proliferation rate
+CD163,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+CD68,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+CSF1R,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+IL10,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+IL4I1,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+MRC1,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+MSR1,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+SIGLEC1,Tumor-associated Macrophages,Pro-tumor/Immune infiltrate
+SNAI1,EMT signature,EMT signature/proliferation rate
+SNAI2,EMT signature,EMT signature/proliferation rate
+TWIST1,EMT signature,EMT signature/proliferation rate
+TWIST2,EMT signature,EMT signature/proliferation rate
+ZEB1,EMT signature,EMT signature/proliferation rate
+ZEB2,EMT signature,EMT signature/proliferation rate
+CDH2,EMT signature,EMT signature/proliferation rate
