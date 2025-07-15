@@ -39,6 +39,7 @@ library(ggpubr)
 library(pheatmap)
 library(EnhancedVolcano)
 library(enrichplot)
+library(ComplexHeatmap)
 
 # printer analysis 
 library(grid)
@@ -54,6 +55,21 @@ library(factoextra)
 library(glmnet)
 
 library(BiocParallel)
+
+
+# ----- VARIABLES ALTER AS NEEDED  ----
+matrisome_file <- read.csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
+immuno_file <- read.csv("~/Repos/RNASeq Pipeline/InnateDB_genes.csv")
+matrisome_index_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
+
+positive_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1")
+negative_genes <- c("AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
+
+naba_pathways <- c(
+  "NABA_MATRISOME", "NABA_ECM_REGULATORS", "NABA_ECM_GLYCOPROTEINS",
+  "NABA_COLLAGENS", "NABA_PROTEOGLYCANS", "NABA_ECM_AFFILIATED",
+  "NABA_CORE_MATRISOME", "NABA_MATRISOME_ASSOCIATED", "NABA_SECRETED_FACTORS"
+)
 
 # ---- 1. Load all datasets  ----
 load_rna_dataset <- function(counts, metadata) {
@@ -235,12 +251,34 @@ annotate_df <- function(df, method="annodbi", species="human") {
   return(merged_df)
 }
 
+annotate_df_remove_dup <- function(df, method="annodbi", species="human") {
+  # annoate df using existing function
+  df <- df %>% as.data.frame()
+  annotated_df <- annotate_df(df, method, species)
+  annotated_df <- annotated_df[!is.na(annotated_df$gene_name), ] # remove na
+  
+  expr_cols <- sapply(annotated_df, is.numeric)
+  expr_cols["gene_name"] <- FALSE
+  
+  # take max of row sums
+  annotated_df$expr_sum <- rowSums(annotated_df[, expr_cols], na.rm = TRUE) # row sums of numeric columns
+  annotated_df <- annotated_df[order(-annotated_df$expr_sum), ] 
+  annotated_df <- annotated_df[!duplicated(annotated_df$gene_name), ]
+  
+  # assign rownames
+  rownames(annotated_df) <- annotated_df$gene_name
+  annotated_df$gene_name <- NULL
+  annotated_df$expr_sum <- NULL
+  
+  return(annotated_df)
+}
+
 reverse_human_annotate <- function(counts, method="annodbi") {
   counts_df <- as.data.frame(counts)
   ids <- rownames(counts_df)
   annotation_type <- annotation_status(ids)
   
-  # handle Ensembl case — already good
+  # handle Ensembl case - already good
   if (annotation_type == "ensembl") {
     counts_df$ensembl_id <- sub("\\..*", "", ids)
     rownames(counts_df) <- counts_df$ensembl_id
@@ -286,31 +324,31 @@ reverse_human_annotate <- function(counts, method="annodbi") {
     df_merged <- df_merged[!duplicated(df_merged$original), ]
   }
   
-  # assign Ensembl as rownames
+  
   counts_df$original <- ids
   final_df <- dplyr::left_join(counts_df, df_merged, by = "original")
   
   ensembl_col <- ifelse("ENSEMBL" %in% colnames(final_df), "ENSEMBL", "ensembl_gene_id")
   
   
-  # Step 1: filter out missing Ensembl ID
+  # filter out missing Ensembl ID
   final_df <- final_df[!is.na(final_df[[ensembl_col]]), ]
-  
-  # Step 2: keep only the first occurrence of each Ensembl ID
+  # keep only the first occurrence of each Ensembl ID
   final_df <- final_df[!duplicated(final_df[[ensembl_col]]), ]
-  
-  # Step 3: assign Ensembl ID as rownames
+  # assign Ensembl ID as rownames
   rownames(final_df) <- final_df[[ensembl_col]]
-  
-  # Step 4: drop helper columns
+  # drop helper columns
   final_df[[ensembl_col]] <- NULL
   final_df$original <- NULL
+  
   return(final_df)
 }
 
 # To mouse case
 # Required if using homologene mapping
 to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
+  
+  # cheating method
   if (method == "case") {
     return(sapply(symbols, function(g) {
       if (is.na(g) || nchar(g) == 0) return("")
@@ -320,6 +358,7 @@ to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
     }))
   }
   
+  # filter out incorrect method
   if (!method %in% c("tomouse", "tohuman")) {
     stop("Invalid method. Use 'case', 'tomouse', or 'tohuman'.")
   }
@@ -353,10 +392,9 @@ to_mouse_case <- function(symbols, method = "tomouse", source = "biomart") {
     } else {
       mouseg_list <- mapIds(morg, keys = symbols, column = "ENTREZID", keytype = "SYMBOL", multiVals = "list")
       
-      # Flatten by keeping the first valid mapping per symbol
+      # keep first valid mapping per symbol
       mouseg <- sapply(mouseg_list, function(x) if (length(x) > 0) x[1] else NA)
       
-      # Now mouseg is a named vector
       valid_idx <- which(!is.na(mouseg))
       mouseg <- mouseg[valid_idx]
       symbols <- symbols[valid_idx]
@@ -404,6 +442,7 @@ response_analysis <- function(name, counts, metadata, species="human", annotatio
     # get tissue for gsea combined analysis
     if (!"tissue" %in% colnames(colData(deres$dds))) tissue <- "unknown"
     else {
+      # assign pancreas if pancreas included despite not being the majority
       tissues <- colData(deres$dds)$tissue
       if("pancreas" %in% tissues) tissue <- "pancreas"
       else tissue <- names(sort(table(tissues), decreasing = TRUE))[1]
@@ -459,6 +498,7 @@ visualise_pca <- function(deres, plot=TRUE, save=FALSE, save_name=NULL) {
 }
 
 # heatmap plot
+# heatmap plot
 visualise_heatmap <- function(deres, proteins=NULL, plot=TRUE, save=FALSE, save_name=NULL) {
   # get relevant data
   res <- deres$res
@@ -493,7 +533,7 @@ visualise_heatmap <- function(deres, proteins=NULL, plot=TRUE, save=FALSE, save_
   scale.dat <- scale.dat[, ordered_idx]
   df <- df[ordered_idx, , drop = FALSE]
   
-  heatmap <- pheatmap(scale.dat,
+  heatmap <- pheatmap::pheatmap(scale.dat,
                       cluster_rows = FALSE,
                       show_rownames = TRUE,
                       show_colnames = FALSE,
@@ -526,6 +566,7 @@ save_pheatmap <- function(x, filename, width=12, height=12){
   }
 }
 
+
 # print res table
 view_res_table <- function(deres, direction=NULL) {
   # get data
@@ -549,20 +590,26 @@ df_png <- function(df, save_name="x.png", row_width=50, col_width=200) {
 
 
 # ---- 6. Pathway Enrichment ----
-pathway_enrichment <- function(deres, view_all = TRUE, category = "H", subset = NULL) {
-  species <- deres$species
-  
+prep_pathway_enrichment <- function(deres) {
   # get DESeq2 results
   res <- deres$res
   # remove NAs
   res <- res[!is.na(res$gene_name) & !is.na(res$stat), ]
-  # remove duplicates (keep highest stat per gene)
+  # remove duplicates (keep highest stat (Wald statistic) per gene)
   res <- res[!duplicated(res$gene_name), ]
   
   # create ranked gene list
   geneList <- res$stat
   names(geneList) <- res$gene_name
   geneList <- sort(geneList, decreasing = TRUE)
+  
+  return(geneList)
+}
+
+pathway_enrichment <- function(deres, view_all = TRUE, category = "H", subset = NULL) {
+  species <- deres$species
+  
+  geneList <- prep_pathway_enrichment(deres)
   
   # get MSigDB hallmark gene sets
   msigdb_sets <- msigdbr(species = species, collection = category)
@@ -582,20 +629,10 @@ pathway_enrichment <- function(deres, view_all = TRUE, category = "H", subset = 
 matrisome_pathway_enrichment <- function(deres, view_all = TRUE) {
   species <- deres$species
   
-  # get DESeq2 results
-  res <- deres$res
-  # remove NAs
-  res <- res[!is.na(res$gene_name) & !is.na(res$stat), ]
-  # remove duplicates (keep highest stat per gene)
-  res <- res[!duplicated(res$gene_name), ]
-  
-  # create ranked gene list
-  geneList <- res$stat
-  names(geneList) <- res$gene_name
-  geneList <- sort(geneList, decreasing = TRUE)
+  geneList <- prep_pathway_enrichment(deres)
   
   # custom pathway
-  matrisome_proteins <- read.csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
+  matrisome_proteins <- matrisome_file
   if(species == "mouse") {
     custom_gene_set <- data.frame(
       term = matrisome_proteins$Category,
@@ -621,19 +658,7 @@ matrisome_pathway_enrichment <- function(deres, view_all = TRUE) {
 custom_pathway_enrichment <- function(deres, custom_human_pathway, view_all=TRUE) {
   species <- deres$species
   
-  # get DESeq2 results
-  res <- deres$res
-  # remove NAs
-  res <- res[!is.na(res$gene_name) & !is.na(res$stat), ]
-  # remove duplicates (keep highest stat per gene)
-  res <- res[!duplicated(res$gene_name), ]
-  
-  # create ranked gene list
-  geneList <- res$stat
-  names(geneList) <- res$gene_name
-  geneList <- sort(geneList, decreasing = TRUE)
-  
-  # if(species == "mouse") custom_human_pathway$gene <- custom_human_pathway$gene %>% to_mouse_case(., source = "annodbi")
+  geneList <- prep_pathway_enrichment(deres)
   
   # set p-value cutoff depending on view_all
   pcut <- ifelse(view_all, 2, 0.05)
@@ -655,7 +680,7 @@ ssGSEA_score <- function(counts, metadata, gene_list, plot=TRUE) {
   gene_sets <- gene_list %>% group_by(term) %>% 
     summarise(genes = list(unique(gene))) %>% deframe()
   
-  expr_mat <- counts %>% prepare_new_annotated_data() %>% as.matrix()
+  expr_mat <- counts %>% prepare_new_data() %>% as.matrix()
   
   ssgsea <- ssgseaParam(
     expr_mat, gene_sets,
@@ -721,6 +746,7 @@ bagaev_clustering <- function(merged_dataset) {
   )
   
   ## colgroups
+  cluster_metadata <- combat_corr$metadata
   cluster_metadata$response <- factor(cluster_metadata$response)
   
   ann_colors <- list(
@@ -765,79 +791,78 @@ bagaev_clustering <- function(merged_dataset) {
 }
 
 # ---- 7. Bulk Deconvolution  ----
-prepare_deconvolution_matrix <- function(deres, annotation_method = "annodbi") {
-  # VST-normalized expression matrix
-  vsd <- vst(deres$dds, blind = TRUE)
-  expr_matrix <- assay(vsd)
+raw_to_tpm <- function(raw_counts) {
+  mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
   
-  # Annotate gene IDs to symbols
-  annotated_expr <- annotate_df(as.data.frame(expr_matrix), method = annotation_method, species = "human")
+  gene_lengths <- getBM(attributes = c("hgnc_symbol", "transcript_length"),
+                        mart = mart)
   
-  # Drop rows with missing symbols
-  annotated_expr <- annotated_expr[!is.na(annotated_expr$gene_name), ]
+  # get max length per gene
+  gene_lengths_summary <- gene_lengths %>%
+    filter(hgnc_symbol != "") %>%
+    group_by(hgnc_symbol) %>%
+    summarise(length_kb = max(transcript_length, na.rm = TRUE) / 1000)
   
-  # Collapse to one row per gene symbol (xCell needs unique symbols)
-  expr_by_symbol <- annotated_expr %>%
-    group_by(gene_name) %>%
-    summarise(across(where(is.numeric), max)) %>%
-    column_to_rownames("gene_name") %>%
-    as.matrix()
+  # get annotated raw counts
+  raw_annotated_counts <- raw_counts %>% as.data.frame() %>% annotate_df_remove_dup()
+  raw_counts_df <- raw_annotated_counts %>%
+    as.data.frame() %>%
+    rownames_to_column("hgnc_symbol")
   
-  if (nrow(expr_by_symbol) < 5000) warning("Low number of annotated genes; check annotation or input data.")
+  counts_with_lengths <- raw_counts_df %>%
+    inner_join(gene_lengths_summary, by = "hgnc_symbol")
   
-  return(expr_by_symbol)
+  # extract length and counts
+  gene_lengths <- counts_with_lengths$length_kb
+  count_matrix <- counts_with_lengths %>% select(-hgnc_symbol, -length_kb)
+  
+  # calculate RPK
+  rpk <- sweep(count_matrix, 1, gene_lengths, FUN = "/")
+  
+  # scaling factors per sample
+  scaling_factors <- colSums(rpk)
+  
+  # TPM = RPK / scaling_factor * 1e6
+  tpm <- sweep(rpk, 2, scaling_factors, FUN = "/") * 1e6
+  
+  # reattach gene_names
+  tpm <- tpm %>%
+    as.data.frame() %>%
+    mutate(hgnc_symbol = counts_with_lengths$hgnc_symbol) %>%
+    column_to_rownames("hgnc_symbol")
+  return(tpm)
 }
 
-xCell_deconvolution <- function(expr) {
-  xcell_scores <- xCell::xCellAnalysis(expr)
-  return(xcell_scores)
-}
-
-epic_deconvolution <- function(expr) {
-  epic_result <- EPIC::EPIC(bulk = expr)
-  return(epic_result$cellFractions)
-}
-
-mcp_deconvolution <- function(expr) {
-  mcp_scores <- MCPcounter::MCPcounter.estimate(
-    expr,
-    featuresType = "HUGO_symbols"
-  )
-  
-  return(mcp_scores)
-}
-
-decosus_deconvolution <- function(expr) {
-  # Ensure no duplicated gene symbols
-  expr <- expr[!duplicated(rownames(expr)), ]
-  
-  # Convert to data.frame if it's a matrix
-  expr_df <- as.data.frame(expr)
-  
-  # Add required hgnc_symbols column
-  expr_df$hgnc_symbols <- rownames(expr_df)
-  
-  decosus_result <- Decosus::cosDeco(x=expr_df, rnaseq = T, plot = TRUE, ext = FALSE)
-  
-  est_Decosus_cells <- decosus_result$main_cells
-  
-  return(est_Decosus_cells %>% as.matrix())
-}
-
-deconvolute_significant <- function(deres, method="xcell") {
-  expr <- prepare_deconvolution_matrix(deres)
-  
+deconvolute <- function(expr, method="xcell") {
   # get scores and metadata
   if(method == "xcell") {
-    scores <- xCell_deconvolution(expr) %>% as.data.frame()
+    scores <- xCell::xCellAnalysis(expr) %>% as.data.frame()
   } else if(method == "epic") {
-    scores <- epic_deconvolution(expr)%>% t() %>% as.data.frame()
+    scores <- EPIC::EPIC(bulk = expr) %>% .$cellFractions %>% t() %>% as.data.frame()
   } else if(method == "mcp") {
-    scores <- mcp_deconvolution(expr) %>% as.data.frame()
+    scores <- MCPcounter::MCPcounter.estimate(
+      expr, featuresType = "HUGO_symbols"
+    ) %>% as.data.frame()
   } else if(method == "decosus") {
-    scores <- decosus_deconvolution(expr) %>% as.data.frame() %>%
+    expr_df <- as.data.frame(expr)
+    # add required hgnc_symbols column
+    expr_df$hgnc_symbols <- rownames(expr_df)
+    decosus_result <- Decosus::cosDeco(x=expr_df, rnaseq = T, plot = TRUE, ext = FALSE)
+    est_Decosus_cells <- decosus_result$main_cells
+    
+    scores <- est_Decosus_cells %>% as.data.frame() %>%
       mutate(across(everything(), ~ ifelse(is.nan(.), 0, .)))
   }
+  
+  return(scores)
+}
+
+
+deconvolute_significant <- function(deres, method="xcell") {
+  expr <- raw_to_tpm(deres$dds %>% assay())
+  
+  # get scores and metadata
+  scores <- deconvolute(expr, method)
   metadata <- deres$dds %>% colData() %>% as.data.frame()
   
   # get responder status and filter
@@ -874,7 +899,50 @@ deconvolute_significant <- function(deres, method="xcell") {
   return(test_statistics)
 }
 
+volcano_deconvolution <- function(deres, method="xcell", plot=TRUE, save=FALSE, save_name=NULL) {
+  test_stats <- deconvolute_significant(deres, method)
+  
+  volcano_plot <- EnhancedVolcano(test_stats, lab=rownames(test_stats),
+                                  x='log2_fc', y='p_adj',
+                                  title=paste0(method, " ", deres$title), pCutoff=0.05)
+  
+  plot_or_save(volcano_plot, deres, plot, save, save_name, "volcano")
+}
 
+
+cluster_deconvolution_individual <- function(deres, method="xcell", plot=TRUE, save=FALSE, save_name=NULL) {
+  set.seed(42)
+  
+  treatment_status <- sub(".*_(.*)$", "\\1", deres$name)
+  metadata <- deres$dds %>% colData() %>% as.data.frame()
+  # filter untreated
+  if (treatment_status != "response" & treatment_status != "merged") metadata <- metadata %>% filter(tolower(treatment) == treatment_status)
+
+  counts <- deres$dds %>% assay() %>% as.data.frame() %>% select(rownames(metadata))
+  expr <- counts %>% raw_to_tpm() %>% as.matrix()
+
+  deconvolution <- deconvolute(expr, method)
+  
+  meta_cols <- c("response")
+  if ("treatment" %in% colnames(metadata)) {
+    meta_cols <- c(meta_cols, "treatment")
+  }
+  
+  df <- as.data.frame(metadata[, meta_cols, drop = FALSE])
+  
+  heatmap <- pheatmap::pheatmap(deconvolution %>% as.matrix,
+                                cutree_cols = 3, 
+                                cluster_rows = FALSE,
+                                show_rownames = TRUE,
+                                show_colnames = FALSE,
+                                annotation_col = df,
+                                silent=!plot)
+  
+  if(is.null(save_name)) save_name <- paste0(deres$name, "_heatmap", ".png")
+  if(save) save_pheatmap(heatmap, save_name)
+
+  return(heatmap)
+}
 
 # ---- 8. Matrisome Index  ----
 matrisome_index <- function(deres) {
@@ -890,30 +958,33 @@ matrisome_index <- function(deres) {
   annotated_log2_cpm_df <- annotate_df(as.data.frame(log2_cpm), "annodbi", deres$species)
   
   # genes
-  positive_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1")
-  negative_genes <- c("AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
   if(deres$species == "mouse") {
     positive_genes <- positive_genes %>% to_mouse_case(., "tomouse", "annodbi")
     negative_genes <- negative_genes %>% to_mouse_case(., "tomouse", "annodbi")
   }
   
+  # get genes available
   pos_ids <- rownames(annotated_log2_cpm_df)[annotated_log2_cpm_df$gene_name %in% positive_genes]
   neg_ids <- rownames(annotated_log2_cpm_df)[annotated_log2_cpm_df$gene_name %in% negative_genes]
   
+  # calc average
   avg_pos <- colMeans(log2_cpm[pos_ids, , drop = FALSE])
   avg_neg <- colMeans(log2_cpm[neg_ids, , drop = FALSE])
   
+  # index = ratio of pos and neg
   matrix_index <- avg_pos / avg_neg
   
   return(matrix_index)
 }
 
 sample_index <- function(deres, plot=TRUE, save=FALSE, save_name=NULL) {
+  # calculate index
   matrix_index <- matrisome_index(deres)
   
   metadata <- deres$dds %>% colData() %>% as.data.frame()
   metadata$index <- matrix_index[rownames(metadata)]
   
+  # check for treatment status
   if (any(grepl("^group$", colnames(metadata)))) {
     metadata <- metadata[order(metadata$group, metadata$index), ]
     metadata$sample <- factor(rownames(metadata), levels = rownames(metadata))
@@ -945,6 +1016,7 @@ boxplot_index <- function(deres, plot=TRUE, save=FALSE, save_name=NULL) {
   metadata <- deres$dds %>% colData() %>% as.data.frame()
   metadata$index <- matrix_index[rownames(metadata)]
   
+  # check for treatment status
   if (any(grepl("^group$", colnames(metadata)))) x <- metadata$group
   else x <- metadata$response
   
@@ -961,12 +1033,12 @@ boxplot_index <- function(deres, plot=TRUE, save=FALSE, save_name=NULL) {
 
 
 # ---- 9. Printer Analysis  ----
-printer_analysis <- function(deres, extra_info=NULL) {
+printer_analysis <- function(deres, output_dir = "printer_analyses", plot_all=FALSE) {
   # get title
   title <- deres$name
   
   # create dir to store all printer_analyses files
-  base_dir <- "printer_analyses/"
+  base_dir <- paste0(output_dir, "/")
   if (!dir.exists(base_dir)) dir.create(base_dir, recursive = TRUE)
   file_path <- paste0(base_dir, title)
   if (!dir.exists(file_path)) dir.create(file_path, recursive = TRUE)
@@ -975,21 +1047,14 @@ printer_analysis <- function(deres, extra_info=NULL) {
   metadata <- deres$dds@colData %>% as.data.frame()
   
   # matrisome_genes
-  matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
-  matrisome_index <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
   if(deres$species == "mouse") {
     matrisome_index <- to_mouse_case(matrisome_index, method = "tomouse", source = "annodbi")
+    immuno_genes <- to_mouse_case(immuno_file$name, method = "tomouse", source = "annodbi")
     matrisome_genes <- matrisome_file$mouse
   } else {
     matrisome_genes <- matrisome_file$GeneSymbol
+    immuno_genes <- immuno_file$name
   }
-  
-  # naba pathways
-  naba_pathways <- c(
-    "NABA_MATRISOME", "NABA_ECM_REGULATORS", "NABA_ECM_GLYCOPROTEINS",
-    "NABA_COLLAGENS", "NABA_PROTEOGLYCANS", "NABA_ECM_AFFILIATED",
-    "NABA_CORE_MATRISOME", "NABA_MATRISOME_ASSOCIATED", "NABA_SECRETED_FACTORS"
-  )
   
   ### Slide 1: Title
   title_slide <- function(title) {
@@ -997,14 +1062,7 @@ printer_analysis <- function(deres, extra_info=NULL) {
     grid.text(title, gp = gpar(fontsize = 24, fontface = "bold"))
   }
   
-  ### Slide 2: Extra Info (Adding text to slide)
-  text <- function(text) {
-    grid.newpage()
-    grid.text(text, x = 0.05, y = 0.95, just = c("left", "top"),
-              gp = gpar(fontsize = 12))
-  }
-  
-  ### Slide 3+: Heading Slide
+  ### Slide 2: Heading Slide
   add_heading_slide <- function(main_title, subtitle) {
     grid.newpage()
     grid.text(main_title, y = 0.65, gp = gpar(fontsize = 20, fontface = "bold"))
@@ -1015,60 +1073,72 @@ printer_analysis <- function(deres, extra_info=NULL) {
   df_png(metadata, paste0(file_path, "/metadata.png"), col_width = 200)
   
   ### Slide 4: PCA
-  visualise_pca(deres, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/pca.png")) # saved as pca.png
+  visualise_pca(deres, plot=plot_all, save=TRUE, save_name=paste0(file_path, "/pca.png"))
   
-  ### Slide 5: Volcano
-  visualise_volcano(deres, plot=FALSE, save=TRUE, save_name=paste0(file_path, "/volcano.png")) # saved as volcano.png
+  ### Slide 5-6: Volcano Plots
+  visualise_volcano(deres, plot=plot_all, save=TRUE, save_name=paste0(file_path, "/volcano.png"))
+  visualise_volcano(deres, plot=plot_all, save=TRUE, save_name=paste0(file_path, "/matrisome_volcano.png"), proteins = matrisome_genes)
+  visualise_volcano(deres, plot=plot_all, save=TRUE, save_name=paste0(file_path, "/immuno_volcano.png"), proteins = immuno_genes)
   
-  ### Slide 6: Heatmap matrisome index
-  visualise_heatmap(deres, save=TRUE, proteins=matrisome_index, save_name=paste0(file_path, "/heatmap_matrisome_index.png"), plot=FALSE)
+  ### Slide 6-7: Heatmaps
+  visualise_heatmap(deres, save=TRUE, proteins=matrisome_index_genes, save_name=paste0(file_path, "/heatmap_matrisome_index.png"), plot=plot_all)
+  visualise_heatmap(deres, save=TRUE, proteins=matrisome_genes, save_name=paste0(file_path, "/heatmap_matrisome.png"), plot=plot_all)
+  visualise_heatmap(deres, save=TRUE, proteins=immuno_genes, save_name=paste0(file_path, "/heatmap_immuno.png"), plot=plot_all)
   
-  ### Slide 7: Heatmap matrisome genes
-  visualise_heatmap(deres, save=TRUE, proteins=matrisome_genes, save_name=paste0(file_path, "/heatmap_matrisome.png"), plot=FALSE)
+  ### Slide 8-11: Pathway Analysis
+  # GSEA hallmark
+  gseaRes <- pathway_enrichment(deres, view_all = FALSE)
+  dotplot_pathways(gseaRes, plot = plot_all, save = TRUE, save_name=paste0(file_path, "/dotplot_hallmark.png"))
+  
+  # GSEA naba
+  gseaResNaba <- pathway_enrichment(deres, view_all = TRUE, category = "C2", subset = naba_pathways)
+  dotplot_pathways(gseaResNaba, plot = plot_all, save = TRUE, save_name=paste0(file_path, "/dotplot_naba.png"))
+  
+  # GSEA custom matrisome
+  gseaResMatrisome <- matrisome_pathway_enrichment(deres)
+  dotplot_pathways(gseaResMatrisome, plot = plot_all, save = TRUE, save_name=paste0(file_path, "/dotplot_matrisome.png"))
+  
+  ### Slide 12-13: Matrix Index
+  sample_index(deres, plot = plot_all, save = TRUE, save_name = paste0(file_path, "/sample_index.png"))
+  boxplot_index(deres, plot = plot_all, save = TRUE, save_name = paste0(file_path, "/boxplot_index.png"))
+  
+  ### Slide 14-17: Deconvolute Significant
+  volcano_deconvolution(deres, plot=plot_all, method="xcell", save=TRUE, save_name=paste0(file_path, "/xcell_volcano.png"))
+  volcano_deconvolution(deres, plot=plot_all, method="mcp", save=TRUE, save_name=paste0(file_path, "/mcp_volcano.png"))
+  volcano_deconvolution(deres, plot=plot_all, method="epic", save=TRUE, save_name=paste0(file_path, "/epic_volcano.png"))
+  volcano_deconvolution(deres, plot=plot_all, method="decosus", save=TRUE, save_name=paste0(file_path, "/decosus_volcano.png"))
+  
+  ### Slide 18-21: Cluster Deconvolution
+  cluster_deconvolution_individual(deres, method="xcell", plot=plot_all, save=TRUE, save_name=paste0(file_path, "/xcell_heatmap.png"))
+  cluster_deconvolution_individual(deres, method="mcp", plot=plot_all, save=TRUE, save_name=paste0(file_path, "/mcp_heatmap.png"))
+  cluster_deconvolution_individual(deres, method="epic", plot=plot_all, save=TRUE, save_name=paste0(file_path, "/epic_heatmap.png"))
+  cluster_deconvolution_individual(deres, method="decosus", plot=plot_all, save=TRUE, save_name=paste0(file_path, "/decosus_heatmap.png"))
   
   
+  ### Slide 22-23: Significant Genes (only if more than 1)
   significant_genes <- view_res_table(deres) %>% dplyr::slice(1:15)
   if(nrow(significant_genes) > 1) {
-    ### Slide 8: Significant Genes
+    ### Slide 22: Significant Genes
     df_png(significant_genes, save_name=paste0(file_path, "/significant_genes.png"), col_width = 110)
     
-    ### Slide 9: Heatmap significant
-    visualise_heatmap(deres, save=TRUE, save_name=paste0(file_path, "/heatmap_significant.png"), plot=FALSE)
+    ### Slide 23: Heatmap significant
+    visualise_heatmap(deres, save=TRUE, save_name=paste0(file_path, "/heatmap_significant.png"), plot=plot_all)
     
     plot_significant <- TRUE
   } else plot_significant <- FALSE
   
-  
-  ### Slide 10+: Pathways
-  # GSEA hallmark
-  gseaRes <- pathway_enrichment(deres, view_all = FALSE)
-  dotplot_pathways(gseaRes, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_hallmark.png"))
-  
-  # GSEA naba
-  gseaResNaba <- pathway_enrichment(deres, view_all = TRUE, category = "C2", subset = naba_pathways)
-  dotplot_pathways(gseaResNaba, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_naba.png"))
-  
-  # GSEA custom matrisome
-  gseaResMatrisome <- matrisome_pathway_enrichment(deres)
-  dotplot_pathways(gseaResMatrisome, plot = FALSE, save = TRUE, save_name=paste0(file_path, "/dotplot_matrisome.png"))
-  
-  ### Slide 12+: Matrix Index
-  sample_index(deres, plot = FALSE, save = TRUE, save_name = paste0(file_path, "/sample_index.png"))
-  boxplot_index(deres, plot = FALSE, save = TRUE, save_name = paste0(file_path, "/boxplot_index.png"))
-  
   # Load in data
   slide_files <- c(
-    "metadata.png",
-    "pca.png",
-    "volcano.png",
-    "heatmap_matrisome_index.png",
-    "heatmap_matrisome.png"
+    "metadata.png", "pca.png",
+    "volcano.png", "matrisome_volcano.png", "immuno_volcano.png",
+    "heatmap_matrisome_index.png", "heatmap_matrisome.png", "heatmap_immuno.png",
+    "dotplot_hallmark.png", "dotplot_naba.png", "dotplot_matrisome.png",
+    "sample_index.png", "boxplot_index.png",
+    "xcell_volcano.png", "mcp_volcano.png", "epic_volcano.png", "decosus_volcano.png",
+    "xcell_heatmap.png", "mcp_heatmap.png", "epic_heatmap.png", "decosus_heatmap.png"
   )
   if (plot_significant) slide_files <- c(slide_files, "significant_genes.png",
                                          "heatmap_significant.png")
-  slide_files <- c(slide_files, 
-                   "dotplot_hallmark.png", "dotplot_naba.png", "dotplot_matrisome.png",
-                   "sample_index.png", "boxplot_index.png")
   slide_files <- file.path(file_path, slide_files)
   
   # Create the PDF!
@@ -1077,25 +1147,20 @@ printer_analysis <- function(deres, extra_info=NULL) {
   ## Slide 1: Title
   title_slide(title)
   
-  ## Slide 2: Extra Info
-  if (!is.null(extra_info) && nzchar(extra_info)) {
-    text(extra_info)
-  }
   
-  
-  # Slide 3+: Annotated image slides
+  # Slide 2+: Annotated image slides
   slide_titles <- c(
-    "Metadata Table",
-    "PCA Plot",
-    "Volcano Plot",
-    "Heatmap: Matrisome Index Genes",
-    "Heatmap: Matrisome Genes"
+    "Metadata Table", "PCA Plot",
+    "Volcano Plot", "Matrisome Volcano Plot", "Immuno Volcano Plot",
+    "Heatmap: Matrisome Index Genes", "Heatmap: Matrisome Genes", "Heatmap: Immuno Genes",
+    "Dotplot: Hallmark Pathways", "Dotplot: NABA Pathways", "Dotplot: Matrisome Pathways", 
+    "Matrisome Index: Between Samples", "Matrisome Index: Between Response",
+    "Deconvolute Significant: xCell", "Deconvolute Significant: MCPcounter", "Deconvolute Significant: EPIC", "Deconvolute Significant: Decosus",
+    "Cluster: xCell", "Cluster: MCPcounter", "Cluster: EPIC", "Cluster: Decosus"
   )
   if (plot_significant) slide_titles <- c(slide_titles, "Top 15 Significant Genes",
                                           "Heatmap: All Significant Genes")
-  slide_titles <- c(slide_titles, 
-                    "Dotplot: Hallmark Pathways", "Dotplot: NABA Pathways", "Dotplot: Matrisome Pathways", 
-                    "Matrisome Index: Between Samples", "Matrisome Index: Between Response")
+                    
   
   for (i in seq_along(slide_files)) {
     # Add heading slide
@@ -1111,56 +1176,53 @@ printer_analysis <- function(deres, extra_info=NULL) {
   message(paste0("Completed ", deres$name))
 }
 
-# combine pdfs
-combine_pdfs <- function(pdfs_dir="printer_analyses", output_file="combined.pdf") {
-  pdf_files <- list.files(pdfs_dir, pattern = "\\.pdf$", full.names = TRUE)
-  if (length(pdf_files) > 0) {
-    # Combine PDFs using qpdf
-    pdf_combine(input = pdf_files, output = output_file)
-    
-    cat("PDFs combined successfully into:", output_file, "\n")
-  } else {
-    cat("No PDF files found in the directory.\n")
+# analyse datasets
+analyse_datasets <- function(datasets_list) {
+  deres_list <- list()
+  for (i in seq_along(datasets_list)) {
+    dataset <- datasets_list[[i]]
+    deres <- response_analysis(dataset$name, dataset$counts, dataset$metadata, dataset$species, "annodbi")
+    deres_list[[dataset$name]] <- deres
   }
+  
+  return(deres_list)
 }
 
-# perform printer analyses for all datasets in list
-recursive_printer <- function(deres_list) {
-  for (i in seq_along(deres_list)) printer_analysis(deres_list[[i]])
+# print datasets
+print_deres_list <- function(deres_list, output_dir="printer_analyses",
+                             output_file = "publicdata.pdf") {
+  for (i in seq_along(deres_list)) {
+    deres <- deres_list[[i]]
+    for (i in seq_along(deres)) printer_analysis(deres[[i]], output_dir=output_dir)
+  }
+  
+  combine_pdfs(pdfs_dir = output_dir, output_file = output_file)
 }
+
 
 # ---- 10. Combination Analysis  ----
-list_analyse_print <- function(datasets_list) {
-  deres_list <- lapply(datasets_list, function(dataset) {
-    deres <- response_analysis(dataset$name, dataset$counts, dataset$metadata, dataset$species, "annodbi")
-    recursive_printer(deres)
-    return(deres)
-  })
-  combine_pdfs(output_file = "publicdata.pdf")
-  return(deres_list)
-}
 
-analyse_datasets <- function(datasets_list) {
-  deres_list <- lapply(datasets_list, function(dataset){
-    deres <- response_analysis(dataset$name, dataset$counts, dataset$metadata, dataset$species, "annodbi")
-    return(deres)
-  })
-  
-  return(deres_list)
-}
-
+# combination analysis printer function
 combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
   gsea_df <- prep_gsea_combined(deres_list)
-  plot_gsea_combined(gsea_df, save = TRUE)
+  plot_gsea_combined(gsea_df, plot_type = 0, save = TRUE)
+  plot_gsea_combined(gsea_df, plot_type = 1,save = TRUE)
+  plot_gsea_combined(gsea_df, plot_type = 2,save = TRUE)
   
   genes_combined(deres_list, save=TRUE)
-  genes_combined(deres_list, "all", pvalues_cutoff = 2, save=TRUE)
+  genes_combined(deres_list, "all", pvalues_cutoff = 1, save=TRUE)
+  other_genes_combined(deres_list, immuno_file$name, cutoff = 1, save=TRUE)
   index_combined(deres_list, save=TRUE)
   
   deconvolute_combined(deres_list, save=TRUE)
   deconvolute_combined(deres_list, method = "mcp", save=TRUE)
   deconvolute_combined(deres_list, method = "epic", save=TRUE)
   deconvolute_combined(deres_list, method = "decosus", save=TRUE)
+  
+  cluster_deconvolution_combined(deres_list, method = "xcell", save=TRUE)
+  cluster_deconvolution_combined(deres_list, method = "mcp", save=TRUE)
+  cluster_deconvolution_combined(deres_list, method = "epic", save=TRUE)
+  cluster_deconvolution_combined(deres_list, method = "decosus", save=TRUE)
   
   pdf(file = pdf_name, width = 8, height = 6)
   png_files <- list.files(path = "combined_analyses", pattern = "\\.png$", full.names = TRUE)
@@ -1178,13 +1240,10 @@ combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
 }
 
 # ---- 10.1 Matrisome Combination Analysis  ----
-genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot=TRUE, save=FALSE, gene_list=NULL) {
+genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot=TRUE, save=FALSE) {
   merged_res_list <- list()
   
   # required files
-  matrisome_index <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
-  matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
-  matrisome_file$...4 <- NULL
   
   for (i in seq_along(deres_list)) {
     for (j in seq_along(deres_list[[i]])) {
@@ -1219,8 +1278,7 @@ genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot
   combined_res_df <- do.call(rbind, merged_res_list) %>% filter(!is.na(gene_name)) %>%
     mutate(significance = ifelse(is.na(padj), "NA", ifelse(padj < 0.05, "< 0.05", "≥ 0.05")))
   
-  if(genes == "index") combined_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% matrisome_index, ]
-  else if (genes == "custom") combined_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% gene_list, ]
+  if(genes == "index") combined_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% matrisome_index_genes, ]
   
   significant_genes <- c()
   for(i in seq_along(matrisome_file$GeneSymbol)) {
@@ -1267,7 +1325,7 @@ genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1),
       axis.text.y = element_markdown(size = 8),
-      strip.text = element_text(size = 10)
+      strip.text = element_text(size = 10, angle = 0)
     )
   
   if(plot) plot(gene_plot)
@@ -1275,28 +1333,117 @@ genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot
     if(genes == "index") ggsave("combined_analyses/index_genes_combined.png", gene_plot, scale = 3)
     else ggsave("combined_analyses/matrisome_genes_combined.png", gene_plot, scale=3)
   }
+  
+  return(significant_genes)
+}
+
+other_genes_combined <- function(deres_list, gene_list, cutoff=0, plot=TRUE, save=FALSE) {
+  merged_res_list <- list()
+  for (i in seq_along(deres_list)) {
+    for (j in seq_along(deres_list[[i]])) {
+      entry <- deres_list[[i]][[j]]
+      res <- entry$res
+      
+      # species check and filter res
+      if(entry$species == "human") {
+        res <- res %>% filter(gene_name %in% matrisome_file$GeneSymbol)
+        res <- merge(res, matrisome_file, 
+                     by.x = "gene_name", by.y = "GeneSymbol")
+        res$GeneSymbol <- res$gene_name
+      }
+      else {
+        res <- res %>% filter(gene_name %in% matrisome_file$mouse)
+        res <- merge(res, matrisome_file,
+                     by.x = "gene_name", by.y = "mouse")
+        res$mouse <- res$gene_name
+      }
+      
+      # metadata
+      res$treatment_status <- sub(".*_(.*)$", "\\1", entry$name)
+      res$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
+      res$species <- entry$species
+      res$tissue <- entry$tissue
+      
+      merged_res_list[[entry$name]] <- res
+    }
+  }
+  
+  combined_res_df <- do.call(rbind, merged_res_list) %>% filter(!is.na(gene_name)) %>%
+    mutate(significance = ifelse(is.na(padj), "NA", ifelse(padj < 0.05, "< 0.05", "≥ 0.05")))
+  combined_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% gene_list, ]
+  
+  significant_genes <- c()
+  for(i in seq_along(matrisome_file$GeneSymbol)) {
+    gene <- matrisome_file$GeneSymbol[i]
+    filter_gene <- combined_res_df %>% filter(GeneSymbol == gene & treatment_status == "response")
+    table_significance <- table(filter_gene$significance)
+    if ( cutoff == 0 && 
+         ("≥ 0.05" %in% names(table_significance) || "< 0.05" %in% names(table_significance))) {
+      significant_genes <- c(significant_genes, gene) 
+    }
+    else if ("< 0.05" %in% names(table_significance) && table_significance["< 0.05"] >= cutoff) {
+      significant_genes <- c(significant_genes, gene) 
+    }
+  }
+  filtered_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% significant_genes,]
+  
+  # colored labels for species
+  filtered_res_df$dataset_label <- case_when(
+    filtered_res_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", filtered_res_df$dataset, "</span>"),
+    filtered_res_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", filtered_res_df$dataset, "</span>"),
+    TRUE ~ filtered_res_df$dataset
+  )
+  
+  # order dataset by tissue
+  filtered_res_df$dataset_label <- factor(
+    filtered_res_df$dataset_label,
+    levels = filtered_res_df %>%
+      distinct(dataset_label, tissue) %>%
+      arrange(tissue, dataset_label) %>%
+      pull(dataset_label)
+  ) %>% paste0(filtered_res_df$tissue, " | ", .)
+  
+  gene_plot <- ggplot(filtered_res_df, aes(x = GeneSymbol, y = dataset_label)) +
+    # dotplot
+    geom_point(aes(size = significance, color = log2FoldChange)) +
+    scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5, "NA" = 1)) +
+    scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    ggh4x::facet_nested(rows = vars(treatment_status), scales = "free", space = "free") +
+    # text theme
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.y = element_markdown(size = 8),
+      strip.text = element_text(size = 10)
+    )
+  
+  if(plot) plot(gene_plot)
+  
+  if(save) {
+    ggsave("combined_analyses/other_genes_combined.png", gene_plot, scale = 3)
+  }
+  
+  return(significant_genes)
 }
 
 index_combined <- function(deres_list, plot=TRUE, save=FALSE) {
   matrisome_index_list <- list()
   
   for (i in seq_along(deres_list)) {
-    for (j in seq_along(deres_list[[i]])) {
-      entry <- deres_list[[i]][[j]]
-      if(grepl("_response$", entry$name) | grepl("_merged$", entry$name)) {
-        matrix_index <- matrisome_index(entry)
-        
-        metadata <- entry$dds %>% colData() %>% as.data.frame()
-        metadata$index <- matrix_index[rownames(metadata)]
-        metadata$response <- tolower(metadata$response)
-        metadata$tissue <- entry$tissue
-        metadata$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
-        
-        metadata <- metadata %>% select(index, dataset, response, tissue)
-        
-        matrisome_index_list[[entry$name]] <- metadata
-      }
-    }
+    if("untreated" %in% names(deres_list[[i]])) entry <- deres_list[[i]]$untreated
+    else if ("merged" %in% names(deres_list[[i]])) entry <- deres_list[[i]]$merged
+    else entry <- deres_list[[i]]$response
+
+    matrix_index <- matrisome_index(entry)
+    
+    metadata <- entry$dds %>% colData() %>% as.data.frame()
+    metadata$index <- matrix_index[rownames(metadata)]
+    metadata$response <- tolower(metadata$response)
+    metadata$tissue <- entry$tissue
+    metadata$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
+    
+    metadata <- metadata %>% select(index, dataset, response, tissue)
+    
+    matrisome_index_list[[entry$name]] <- metadata
   }
   
   matrisome_index_df <- do.call(rbind, matrisome_index_list)
@@ -1327,7 +1474,7 @@ index_combined <- function(deres_list, plot=TRUE, save=FALSE) {
 # ---- 10.2 Pathways Combination Analysis  ----
 
 # function to prep gsea (to avoid running gsea analyses multiple times)
-prep_gsea_combined <- function(deres_list, type = "hallmark") {
+prep_gsea_combined <- function(deres_list, species_prep=FALSE, tissue_prep=FALSE) {
   merged_gsea_list <- list()
   
   # required pathways
@@ -1403,21 +1550,27 @@ prep_gsea_combined <- function(deres_list, type = "hallmark") {
   combined_gsea_df <- do.call(rbind, merged_gsea_list) %>% 
     mutate(significance = ifelse(p.adjust < 0.05, "< 0.05", "≥ 0.05"))
   
-  # colored labels for species
-  combined_gsea_df$dataset_label <- case_when(
-    combined_gsea_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", combined_gsea_df$dataset, "</span>"),
-    combined_gsea_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", combined_gsea_df$dataset, "</span>"),
-    TRUE ~ combined_gsea_df$dataset
-  )
+  
+  
+  if(species_prep) {
+    # colored labels for species
+    combined_gsea_df$dataset_label <- case_when(
+      combined_gsea_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", combined_gsea_df$dataset, "</span>"),
+      combined_gsea_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", combined_gsea_df$dataset, "</span>"),
+      TRUE ~ combined_gsea_df$dataset
+    )
+  } else combined_gsea_df$dataset_label <- combined_gsea_df$dataset
   
   # order dataset by tissue
-  combined_gsea_df$dataset_label <- factor(
-    combined_gsea_df$dataset_label,
-    levels = combined_gsea_df %>%
-      distinct(dataset_label, tissue) %>%
-      arrange(tissue, dataset_label) %>%
-      pull(dataset_label)
-  ) %>% paste0(combined_gsea_df$tissue, " | ", .)
+  if(tissue_prep) {
+    combined_gsea_df$dataset_label <- factor(
+      combined_gsea_df$dataset_label,
+      levels = combined_gsea_df %>%
+        distinct(dataset_label, tissue) %>%
+        arrange(tissue, dataset_label) %>%
+        pull(dataset_label)
+    ) %>% paste0(combined_gsea_df$tissue, " | ", .)
+  }
   
   # order ID by facet/category
   combined_gsea_df$ID <- factor(combined_gsea_df$ID, 
@@ -1426,7 +1579,11 @@ prep_gsea_combined <- function(deres_list, type = "hallmark") {
   return(combined_gsea_df)
 }
 
-plot_gsea_combined <- function(combined_gsea_df, plot=TRUE, save=FALSE) {
+plot_gsea_combined <- function(combined_gsea_df, plot=TRUE, save=FALSE, plot_type=0) {
+  # plot type: 0 = all, 1 = matrisome only, 2 = hallmark only
+  if(plot_type == 1) combined_gsea_df <- combined_gsea_df %>% filter(facet != "Hallmark")
+  else if(plot_type == 2) combined_gsea_df <- combined_gsea_df %>% filter(facet == "Hallmark")
+  
   gsea_combined <- ggplot(combined_gsea_df, aes(x = ID, y = dataset_label)) +
     # dotplot
     geom_point(aes(size = significance, color = NES)) +
@@ -1434,14 +1591,15 @@ plot_gsea_combined <- function(combined_gsea_df, plot=TRUE, save=FALSE) {
     scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
     
     # nested facet plot
-    ggh4x::facet_nested(rows = vars(treatment_status), cols = vars(facet, category), scales = "free", space = "free") +
+    ggh4x::facet_nested(rows = vars(treatment_status), cols = vars(facet, category), scales = "free", space = "free") + theme_pubr() + 
     
     # text theme
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.x = element_text(angle = 45, hjust = 1, size=8),
       axis.text.y = element_markdown(size = 8),
-      strip.text = element_text(size = 10)
-    ) + labs(x = NULL, y = NULL)
+      strip.text.x = element_text(size = 8),
+      strip.text.y = element_text(angle=0)
+    ) + labs(x = NULL, y = NULL) 
 
   
   if(plot) plot(gsea_combined)
@@ -1509,17 +1667,18 @@ plot_custom_gsea_combined <- function(deres_list, custom_pathway) {
 
 # ---- 10.3 Common Genes  ----
 # find commonly upregulated and downregulated genes
-common_genes <- function(deres_list, direction="up", cutoff=5) {
-  genes <- c("s")
+common_genes <- function(deres_list, direction="up", cutoff=2) {
+  genes <- c()
   for (i in seq_along(deres_list)) {
-    for (j in seq_along(deres_list[[i]])) {
-      entry <- deres_list[[i]][[j]]
-      if(grepl("_response$", entry$name)) {
-        res_genes <- view_res_table(entry, direction)$gene_name
-        if(entry$species == "mouse") res_genes <- to_mouse_case(res_genes, "tohuman", "annodbi")
-        res_genes <- res_genes[!is.na(res_genes)]
-        genes <- c(genes, res_genes)
-      }
+    if("untreated" %in% names(deres_list[[i]])) entry <- deres_list[[i]]$untreated
+    else if("merged" %in% names(deres_list[[i]])) entry <- NULL
+    else entry <- deres_list[[i]]$response
+    
+    if(!is.null(entry)) {
+      res_genes <- view_res_table(entry, direction)$gene_name
+      if(entry$species == "mouse") res_genes <- to_mouse_case(res_genes, "tohuman", "annodbi")
+      res_genes <- res_genes[!is.na(res_genes)]
+      genes <- c(genes, res_genes)
     }
   }
   gene_counts <- table(genes)
@@ -1528,51 +1687,108 @@ common_genes <- function(deres_list, direction="up", cutoff=5) {
 }
 
 # ---- 10.4 Deconvolution Combined  ----
-deconvolute_combined <- function(deres_list, method = "xcell", plot=TRUE, save=FALSE) {
+deconvolute_combined <- function(deres_list, method = "xcell", plot=TRUE, save=FALSE, tissue_prep=FALSE) {
   merged_deconvolution_list <- list()
   
   for (i in seq_along(deres_list)) {
-    for (j in seq_along(deres_list[[i]])) {
-      entry <- deres_list[[i]][[j]]
-      treatment_status <- sub(".*_(.*)$", "\\1", entry$name)
+    if("untreated" %in% names(deres_list[[i]])) entry <- deres_list[[i]]$untreated
+    if("merged" %in% names(deres_list[[i]])) entry <- deres_list[[i]]$merged
+    else entry <- deres_list[[i]]$response
       
-      if (entry$species == "human" & (treatment_status == "response" || treatment_status == "merged")) {
-        # Try to run deconvolute_significant, and skip on error
-        tryCatch({
-          deconv <- deconvolute_significant(entry, method = method)
-          deconv$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
-          deconv$tissue <- entry$tissue
-          merged_deconvolution_list[[entry$name]] <- deconv
-        }, error = function(e) {
-          message(sprintf("Skipping %s due to error: %s", entry$name, e$message))
-        })
-      }
+    if (entry$species == "human") {
+      # Try to run deconvolute_significant, and skip on error
+      tryCatch({
+        deconv <- deconvolute_significant(entry, method = method)
+        deconv$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
+        deconv$tissue <- entry$tissue
+        merged_deconvolution_list[[entry$name]] <- deconv
+      }, error = function(e) {
+        message(sprintf("Skipping %s due to error: %s", entry$name, e$message))
+      })
     }
   }
   
   # Combine all data and continue as normal
   combined_deconv_df <- do.call(rbind, merged_deconvolution_list) %>%
-    mutate(log_p = -log10(p_adj)) %>%
-    mutate(significance = ifelse(p_adj < 0.05, "< 0.05", "≥ 0.05"))
+    mutate(log_p = -log10(p_adj))
+  
+  combined_deconv_df$significance <- apply(combined_deconv_df, 1, function(row) {
+    if(is.na(row[["p_adj"]])) return("≥ 0.05")
+    else if(row[["p_adj"]] < 0.05) return("< 0.05")
+    else return("≥ 0.05")
+  })
   
   # Order dataset by tissue
-  combined_deconv_df$dataset <- factor(
-    combined_deconv_df$dataset,
-    levels = combined_deconv_df %>%
-      distinct(dataset, tissue) %>%
-      arrange(tissue, dataset) %>%
-      pull(dataset)
-  ) %>% paste0(combined_deconv_df$tissue, " | ", .)
+  if(tissue_prep){
+    combined_deconv_df$dataset <- factor(
+      combined_deconv_df$dataset,
+      levels = combined_deconv_df %>%
+        distinct(dataset, tissue) %>%
+        arrange(tissue, dataset) %>%
+        pull(dataset)
+    ) %>% paste0(combined_deconv_df$tissue, " | ", .)
+  }
+  
   
   # Plot
-  combined_deconv_plot <- ggplot(combined_deconv_df, aes(x = dataset, y = cell)) +
+  combined_deconv_plot <- ggplot(combined_deconv_df, aes(x = cell, y = dataset)) +
     geom_point(aes(size = significance, color=log2_fc)) + 
     scale_size_manual(values = c("≥ 0.05" = 2, "< 0.05" = 5)) +
     scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
   
   if(plot) plot(combined_deconv_plot)
   if(save) ggsave( paste0("combined_analyses/", method, "_deconv_combined.png"), combined_deconv_plot, scale = 3)
+}
+
+cluster_deconvolution_combined <- function(deres_list, method="xcell", clusters = 3, plot=TRUE, save=FALSE) {
+  set.seed(42)
+  
+  # get merged
+  merged_dataset <- merge_datasets(deres_list)
+  merged_dataset$counts <- merged_dataset$counts %>% raw_to_tpm() 
+  combat_corr <- combat_correction(merged_dataset, FALSE)
+  
+  expr <- combat_corr$expr
+  metadata <- combat_corr$metadata
+  
+  deconvolution <- deconvolute(expr, method)
+  
+  # heatmap
+  ann_colors <- list(
+    response = c("responder" = "forestgreen", "nonresponder" = "firebrick")
+  )
+  
+  top_anno <- HeatmapAnnotation(
+    response = metadata$response,
+    batch = metadata$batch,
+    col = ann_colors,
+    annotation_legend_param = list(
+      response = list(title = "Response")
+    )
+  )
+  
+  
+  heatmap <- Heatmap(
+    deconvolution %>% as.matrix(),
+    top_annotation = top_anno,
+    cluster_columns = TRUE,
+    column_km = clusters,
+    row_title_gp = gpar(fontsize = 9, fontface = "bold"),
+    row_names_gp = gpar(fontsize = 8),
+    column_names_gp = gpar(fontsize = 6),
+    show_column_names = TRUE,
+    heatmap_legend_param = list(color_bar = "continuous")
+  )
+  
+  if(plot) plot(heatmap)
+
+  if(save){
+    png(paste0("combined_analyses/", method, "_deconv_cluster.png"),
+        width=10,height=10,units="in",res=800)
+    print(heatmap)
+    dev.off()
+  }  
 }
 
 # ---- 11. Merger Analysis ----
@@ -1581,13 +1797,8 @@ merge_datasets <- function(deres_list, tissue="pancreas") {
   required_deres <- list()
   # get required datasets
   for (i in seq_along(deres_list)) {
-    deres <- deres_list[[i]]
-    if ("untreated" %in% names(deres)) {
-      deres <- deres$untreated
-    } else {
-      deres <- deres$response
-    }
-    
+    deres <- deres_list[[i]]$response
+  
     if (deres$species == "human") {
       if (tissue == "all" || deres$tissue == tissue) required_deres[[deres$name]] <- deres
     }
@@ -1599,11 +1810,16 @@ merge_datasets <- function(deres_list, tissue="pancreas") {
   # loop through required and merge
   for (i in seq_along(required_deres)) {
     deres <- required_deres[[i]]
-    required_met <- deres$dds %>% colData() %>% as.data.frame() %>% select(response, batch)
+    deres_metadata <- deres$dds %>% colData() %>% as.data.frame()
+    if ("treatment" %in% colnames(deres_metadata)) required_met <- deres_metadata %>% 
+      filter(tolower(treatment) == "untreated") %>% select(response, batch)
+    else required_met <- deres_metadata  %>% select(response, batch)
+    
     metadata <- rbind(metadata, required_met)
     
     required_counts <- deres$dds %>% assay() %>% reverse_human_annotate()
     required_counts$gene_id <- rownames(required_counts)
+    required_counts <- required_counts %>% select(c(rownames(required_met), gene_id))
     
     if (nrow(counts_matrix) == 0) {
       counts_matrix <- required_counts
@@ -1642,25 +1858,28 @@ merged_de <- function(deres_list, tissue="pancreas") {
 
 ## Functions to prepare datasets
 # batch correct vsd
-combat_correction <- function(merged_dataset) {
-  # Normalise and Log transform
+combat_correction <- function(merged_dataset, normalise=TRUE) {
+  # annotation
   raw_counts <- merged_dataset$counts %>% annotate_df()
   raw_counts <- raw_counts[!is.na(raw_counts$gene_name), ]
   rownames(raw_counts) <- make.unique(as.character(raw_counts$gene_name))
   raw_counts$gene_name <- NULL
   
-  # Compute library sizes and CPM
-  lib_sizes <- colSums(raw_counts)
-  cpm <- sweep(raw_counts, 2, lib_sizes, FUN = "/") * 1e6
+  # normalisation
+  if(normalise) {
+    # compute cpm
+    lib_sizes <- colSums(raw_counts)
+    cpm <- sweep(raw_counts, 2, lib_sizes, FUN = "/") * 1e6
+    # log transform
+    transformed_cpm <- log2(cpm + 1)
+    transformed_cpm <- as.matrix(transformed_cpm)
+  } else transformed_cpm <- as.matrix(raw_counts)
   
-  # Log2-transform
-  log2_cpm <- log2(cpm + 1)
-  log2_cpm <- as.matrix(log2_cpm)
   
   # Batch Correction
   BiocParallel::register(SerialParam())
   mod <- model.matrix(~ response, data = merged_dataset$metadata)
-  combat_expr <- ComBat(dat = log2_cpm, batch = merged_dataset$metadata$batch, mod = mod)
+  combat_expr <- ComBat(dat = transformed_cpm, batch = merged_dataset$metadata$batch, mod = mod)
   
   return(list(expr=combat_expr, metadata=merged_dataset$metadata))
 }
@@ -1669,53 +1888,11 @@ combat_correction <- function(merged_dataset) {
 prepare_new_data <- function(counts) {
   lib_sizes <- colSums(counts)
   cpm <- sweep(counts, 2, lib_sizes, FUN = "/") * 1e6
-  log2_cpm <- log2(cpm + 1) %>% as.data.frame()
+  log2_cpm <- log2(cpm + 1) %>% as.data.frame() %>% annotate_df_remove_dup()
   
   return(log2_cpm)
 }
 
-prepare_new_annotated_data <- function(counts) {
-  exp_data <- prepare_new_data(counts) %>% annotate_df()
-  exp_data <- exp_data[!is.na(exp_data$gene_name), ]
-  rownames(exp_data) <- make.unique(as.character(exp_data$gene_name))
-  exp_data$gene_name <- NULL
-  
-  return(exp_data)
-}
-
-prepare_new_data_batch <- function(new_counts, new_metadata, train_counts, train_metadata) {
-  new_counts <- new_counts %>% reverse_human_annotate()
-  
-  # 1. Match common genes between train and new data
-  common_genes <- intersect(rownames(train_counts), rownames(new_counts))
-  train_counts_matched <- train_counts[common_genes, , drop = FALSE]
-  new_counts_matched   <- new_counts[common_genes, , drop = FALSE]
-  
-  # 2. Combine counts (genes x samples)
-  combined_counts <- cbind(train_counts_matched, new_counts_matched)
-  
-  # 3. Calculate log2 CPM
-  lib_sizes <- colSums(combined_counts)
-  cpm <- sweep(combined_counts, 2, lib_sizes, FUN = "/") * 1e6
-  log2_cpm <- log2(cpm + 1)
-  
-  # 4. Combine metadata and align sample names
-  combined_meta <- rbind(train_metadata, new_metadata)
-  combined_meta <- combined_meta[colnames(log2_cpm), ]  # ensure correct sample order
-  
-  # 5. Model matrix and ComBat
-  mod <- model.matrix(~ 1, data = combined_meta)
-  combat_expr <- ComBat(dat = log2_cpm, batch = combined_meta$batch, mod = mod)
-  
-  # 6. Extract only the new samples
-  test_expr_corrected <- combat_expr[, colnames(new_counts_matched)]
-  
-  # 7. Return: transposed so rows = samples, cols = genes
-  return(as.data.frame(t(test_expr_corrected)))
-}
-
-
-# annotate vsd
 merged_filter_matrisome <- function(expr) {
   matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
   matrisome_file$...4 <- NULL
@@ -1730,7 +1907,6 @@ merged_filter_matrisome <- function(expr) {
   return(expr)
 }
 
-# transpose vsd for ml packages
 prepare_ml_data <- function(merged_dataset, use_matrisome=FALSE, top_n = 1000, use_mads=TRUE) {
   cor_data <- combat_correction(merged_dataset)
   
@@ -1772,7 +1948,7 @@ pca_merged <- function(merged_dataset) {
 }
 
 # ---- 12.1 ML Models ----
-run_ml_models <- function(df, method = "rf", tuneLength = 5, seed = 42) {
+run_ml_model <- function(df, method = "rf", tuneLength = 5, seed = 42) {
   set.seed(seed)
   
   # Split data
@@ -1922,9 +2098,10 @@ caret_gene_signature <- function(df, seed=42) {
   set.seed(seed)
   
   # 1. Prepare training data
-  df$response <- as.factor(df$response)
+  df$response <- factor(df$response, levels = c("nonresponder", "responder"))
   
   # 2. Define training control
+  # model evaluation CV
   train_control <- caret::trainControl(
     method = "repeatedcv",
     number = 10,
@@ -1934,6 +2111,7 @@ caret_gene_signature <- function(df, seed=42) {
     savePredictions = "final"
   )
   
+  # includes CV for hyperparameter (alpha, lambda) tuning
   model_glmnet <- train(
     response ~ .,
     data = df,
@@ -1941,7 +2119,7 @@ caret_gene_signature <- function(df, seed=42) {
     family = "binomial",
     trControl = train_control,
     metric = "ROC",
-    tuneLength = 10,
+    tuneLength = 20, 
     preProcess = c("center", "scale")
   )
   
@@ -1975,7 +2153,7 @@ signature_finder <- function(deres_list, tissue="all", use_matrisome = TRUE) {
 
 # apply various calculated signatures
 signature_applier <- function(signature, raw_counts, metadata=NULL) {
-  prepped_counts <- prepare_new_annotated_data(raw_counts)
+  prepped_counts <- prepare_new_data(raw_counts)
   positive_genes <- signature %>% filter(Weight > 0)
   negative_genes <- signature %>% filter(Weight < 0)
   
@@ -2050,31 +2228,21 @@ view_signatures <- function(signature, counts, metadata = NULL) {
   return(signs_plot)
 }
 
-
-# ---- 12.3 Depreciated ML methods ----
-glmnet_gene_signature <- function(df, seed = 42) {
-  set.seed(seed)
+# ---- 12.3 Immune-Response-related Risk Score  ----
+get_intersection_genes <- function(deres_list, selected_deres, intersection_list) {
+  deres <- deres_list[[selected_deres]]
+  if("untreated" %in% names(deres)) res <- deres$untreated$res
+  else res <- deres$response$res
   
-  x <- as.matrix(df[ , !colnames(df) %in% "response"])
-  y <- as.factor(df$response)
-  y_bin <- ifelse(y == "responder", 1, 0)
+  matrisome_genes <- read.csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv") %>% .$GeneSymbol
   
-  # Fit LASSO model (logistic regression with L1 penalty)
-  cvfit <- cv.glmnet(x, y_bin, family = "binomial", alpha = 1)
+  intersection_list <- res %>% filter(abs(log2FoldChange) > 1 & padj < 0.05) %>% filter(gene_name %in% intersection_list) %>% .$gene_name
   
-  # Extract coefficients at lambda.1se (simpler model)
-  coefs <- coef(cvfit, s = "lambda.min")
-  coef_df <- as.data.frame(as.matrix(coefs))
-  coef_df$Gene <- rownames(coef_df)
-  colnames(coef_df)[1] <- "Weight"
-  
-  # Filter non-zero coefficients (excluding intercept)
-  gene_signature <- coef_df %>%
-    filter(Weight != 0 & Gene != "(Intercept)")
-  
-  return(gene_signature)
+  return(intersection_list)
 }
 
+
+# ---- 12.4 Depreciated ML methods ----
 compare_sig_pipeline <- function(deres_list, use_matrisome = TRUE, 
                                test_counts, test_metadata) {
   # 1. prepare data
@@ -2118,42 +2286,6 @@ compare_sig_pipeline <- function(deres_list, use_matrisome = TRUE,
   plot(ggarrange(train_plot, test_plot))
 
   return(train_auc_val, test_auc_val)
-}
-
-signature_self_validate <- function(deres_list, tissue="all", use_matrisome=TRUE) {
-  set.seed(42)
-  
-  merged_dataset <- merge_datasets(deres_list, tissue = tissue)
-  ml_df <- prepare_ml_data(merged_dataset, use_matrisome)
-  
-  trainIndex <- createDataPartition(ml_df$response, p = 0.7, list = FALSE)
-  train <- ml_df[trainIndex, ]
-  test <- ml_df[-trainIndex, ]
-  
-  sig_res <- caret_gene_signature(train)
-  
-  train_scores <- apply_gene_signature(train[ , -which(names(train) == "response")], sig_res)
-  
-  train_scores$Z <- scale(train_scores$Score)
-  train_scores$response <- train$response
-  
-  mean_train <- mean(train_scores$Score)
-  sd_train   <- sd(train_scores$Score)
-  
-  test_scores <- apply_gene_signature(test[ , -which(names(test) == "response")], sig_res)
-  test_scores$Z <- (test_scores$Score - mean_train) / sd_train
-  test_scores$response <- test$response
-  
-  train_data <- ggplot(train_scores, aes(x = Z, fill = response)) +
-    geom_density(alpha = 0.5) +
-    ggtitle("Training Dataset")
-  test_data <- ggplot(test_scores, aes(x = Z, fill = response)) +
-    geom_density(alpha = 0.5) +
-    ggtitle("Testing Dataset")
-  
-  plot(ggarrange(train_data, test_data))
-  
-  return(signature=sig_res)
 }
 
 signature_lobo_validate <- function(deres_list, tissue="all", use_matrisome=TRUE) {
@@ -2249,6 +2381,18 @@ plot_lobo_results <- function(lobo_results) {
 }
 
 # ---- 13. Other Useful Functions  ----
+combine_pdfs <- function(pdfs_dir="printer_analyses", output_file="combined.pdf") {
+  pdf_files <- list.files(pdfs_dir, pattern = "\\.pdf$", full.names = TRUE)
+  if (length(pdf_files) > 0) {
+    # Combine PDFs using qpdf
+    pdf_combine(input = pdf_files, output = output_file)
+    
+    cat("PDFs combined successfully into:", output_file, "\n")
+  } else {
+    cat("No PDF files found in the directory.\n")
+  }
+}
+
 check_valid_data <- function(counts, metadata) {
   print(all(colnames(counts) == rownames(metadata)))
 }

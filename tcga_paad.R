@@ -98,6 +98,81 @@ plot_survivals <- function(gene_list) {
   ggarrange(plotlist = km_plots)
 }
 
+find_sig_survivals <- function(gene_list, annotated_data = get_annotated_data()) {
+  clinical <- annotated_data$clinical
+  expr <- annotated_data$expr
+  annotated <- annotated_data$annotated
+  
+  sig_genes <- c()
+  
+  for (gene in gene_list) {
+    gene_row <- annotated %>%
+      as.data.frame() %>%
+      filter(gene_name == gene) %>%
+      slice(1)
+    ensembl_id <- rownames(gene_row)
+  
+    # extract expression 
+    expr_vector <- expr[ensembl_id, ]
+    expr_group <- ifelse(expr_vector > median(expr_vector, na.rm = TRUE), "High", "Low")
+    
+    # get clincial data
+    surv_df <- clinical %>% as.data.frame() %>%
+      mutate(group = expr_group[colnames(expr)])
+    
+    # get survival_data
+    fit <- tryCatch(
+      {survfit(Surv(days_to_death, vital_status == "Dead") ~ group, data = surv_df)
+      }, error = function(error) {
+        print(paste0("Failed ", gene))
+        return(NULL)}
+    )
+    
+    if(!is.null(fit)) {
+      p_val_data <- surv_pvalue(fit, surv_df)
+      p_val <- p_val_data$pval[[1]]
+      if(!is.na(p_val) & p_val < 0.05) sig_genes <- c(gene, sig_genes) 
+    }
+  }
+  
+  return(sig_genes)
+}
+
+plot_gene_set_survivals <- function(gene_set, annotated_data = get_annotated_data()) {
+  clinical <- annotated_data$clinical
+  expr <- annotated_data$expr %>% prepare_new_data() %>% as.matrix()
+  annotated <- annotated_data$annotated
+  
+  ssgsea <- ssgseaParam(
+    expr, list(set = gene_set),
+    minSize = 1, maxSize = Inf,
+    alpha = 0.25, normalize = TRUE
+  )
+  
+  # Run GSVA with the ssGSEA parameter object
+  ssgsea_scores <- gsva(ssgsea, verbose = TRUE)
+  
+  # Extract the scores
+  score_vector <- as.numeric(ssgsea_scores["set", ])
+  names(score_vector) <- colnames(expr)
+  
+  # Group samples
+  expr_group <- ifelse(score_vector > median(score_vector, na.rm = TRUE), "High", "Low")
+  
+  # Match group with clinical data
+  surv_df <- clinical %>%
+    as.data.frame() %>%
+    mutate(group = expr_group[rownames(clinical)])
+  
+  # Kaplan-Meier survival fit
+  fit <- survfit(Surv(days_to_death, vital_status == "Dead") ~ group, data = surv_df)
+  # Plot survival
+  plot <- ggsurvplot(fit, data = surv_df, pval = TRUE,
+                     title = paste0("Survival by ssGSEA Score of Gene Set"))$plot
+  
+  return(plot)
+}
+
 # signature score survival
 plot_survival_signature <- function(signature, method="coef") {
   expr_data <- load_data() %>% assay() %>% as.data.frame()
@@ -128,7 +203,7 @@ plot_survival_signature <- function(signature, method="coef") {
 # ----- 3.1 NMF prep  ----
 prepare_d_exp <- function() {
   exp_data <- load_data() %>% assay() %>% as.data.frame() %>% 
-    prepare_new_annotated_data()
+    prepare_new_data()
   
   d_exp <- exp_data
   mads <- apply(d_exp, 1, mad)
@@ -138,7 +213,7 @@ prepare_d_exp <- function() {
 }
 
 matrisome_prepare_d_exp <- function() {
-  exp_data <- load_data() %>% assay() %>% prepare_new_annotated_data()
+  exp_data <- load_data() %>% assay() %>% prepare_new_data()
   
   matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
   
@@ -214,7 +289,7 @@ nmf_new_data <- function(nmf_data, deres_list) {
   merged_dataset <- merge_datasets(deres_list)
   
   merged_counts <- merged_dataset$counts %>%
-    prepare_new_annotated_data()
+    prepare_new_data()
   
   # Step 2: Match genes with original NMF data
   d_exp <- nmf_data$original
@@ -362,20 +437,20 @@ nmf_pathway_analysis <- function(limma_res){
   
   for (i in 1:no_of_clusters) {
     set.seed(55)
-    #gse <- gseGO(geneList=gene_lists[[i]], 
-    #             ont ="ALL", 
-    #             keyType = "SYMBOL", 
-    #             nPerm = 1000, 
-    #             minGSSize = 3, 
-    #             maxGSSize = 800, 
-    #             pvalueCutoff = 0.05, 
-    #             verbose = TRUE, 
-    #             OrgDb = "org.Hs.eg.db", 
-    #             pAdjustMethod = "none")
+    gse <- gseGO(geneList=gene_lists[[i]], 
+                 ont ="ALL", 
+                 keyType = "SYMBOL", 
+                 nPerm = 1000, 
+                 minGSSize = 3, 
+                 maxGSSize = 800, 
+                 pvalueCutoff = 0.05, 
+                 verbose = TRUE, 
+                 OrgDb = "org.Hs.eg.db", 
+                 pAdjustMethod = "none")
     
-    gseaRes <- GSEA(gene_lists[[i]], TERM2GENE = msigdbr_t2g, pvalueCutoff = 0.05)
+    # gseaRes <- GSEA(gene_lists[[i]], TERM2GENE = msigdbr_t2g, pvalueCutoff = 0.05)
     
-    GSEA_res<-append(GSEA_res, gseaRes)
+    GSEA_res<-append(GSEA_res, gse)
   }
   
   return(GSEA_res)
