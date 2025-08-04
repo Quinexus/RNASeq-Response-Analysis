@@ -35,10 +35,23 @@ load_data <- function() {
   if (file.exists("paad_data.rds")) {
     data <- readRDS("paad_data.rds")
   } else {
-    # data <- download_data()
     print("downloading data")
+    data <- download_data()
   }
-  data <- data[, colData(data)$tissue_type %>% tolower() != "normal"]
+  
+  pdac_labels <- c(
+    "infiltrating duct carcinoma, nos",
+    "adenocarcinoma, nos",
+    "adenocarcinoma with mixed subtypes"
+  )
+  
+  data <- data[, (colData(data)$tissue_type %>% tolower()) != "normal"]
+  data <- data[, (colData(data)$classification_of_tumor %>% tolower()) != "metastasis"]
+  data <- data[, (colData(data)$primary_diagnosis %>% tolower()) ==  "infiltrating duct carcinoma, nos"]
+  
+  
+  # Filter the data
+  
   return(data)
 }
 
@@ -174,7 +187,7 @@ plot_gene_set_survivals <- function(gene_set, annotated_data = get_annotated_dat
 }
 
 # signature score survival
-plot_survival_signature <- function(signature, method="coef") {
+plot_survival_signature <- function(signature, method="coef", title=FALSE) {
   expr_data <- load_data() %>% assay() %>% as.data.frame()
   
   # get score
@@ -190,9 +203,12 @@ plot_survival_signature <- function(signature, method="coef") {
   surv_df$group <- expr_group
   fit <- survfit(Surv(days_to_death, vital_status == "Dead") ~ group, data = surv_df)
   
+  if(title) plot_title <- paste0("Survival by Signature Score")
+  else plot_title <- NULL
+  
   # get plot
   plot <- ggsurvplot(fit, data = surv_df, pval = TRUE,
-                     title = paste0("Survival by Signature Score"))$plot
+                     title = plot_title)$plot
   
   return(plot)
 }
@@ -284,7 +300,55 @@ nmf_survival <- function(nmf_data) {
              ggtheme = theme_minimal())
 }
 
-nmf_new_data <- function(nmf_data, deres_list) {
+get_cluster_defining_genes <- function(nmf_data, matrisome=TRUE, no_genes=40) {
+  cluster_defining_genes <- list()
+  for (i in 1:length(nmf_data$limma_res)) {
+    limma_res <- nmf_data$limma_res[[i]]
+    
+    if(matrisome) {
+      pos_genes <- limma_res %>% filter(rownames(.) %in% matrisome_file$GeneSymbol) %>% filter(logFC > 1) %>% arrange(desc(logFC)) %>% slice(1:no_genes) %>% rownames()
+      neg_genes <- limma_res%>% filter(rownames(.) %in% matrisome_file$GeneSymbol) %>% filter(logFC < -1) %>% arrange(logFC) %>% slice(1:no_genes) %>% rownames()
+    } else {
+      pos_genes <- limma_res %>% filter(logFC > 1) %>% arrange(desc(logFC)) %>% slice(1:no_genes) %>% rownames()
+      neg_genes <- limma_res %>% filter(logFC < -1) %>% arrange(logFC) %>% slice(1:no_genes) %>% rownames()
+    }
+    
+    
+    cluster_defining_genes[[paste0("Positive_Cluster_",i)]] <- pos_genes
+    cluster_defining_genes[[paste0("Negative_Cluster_",i)]] <- neg_genes
+  }
+  
+  return(cluster_defining_genes)
+}
+
+predict_clusters <- function(nmf_data, deres_list, matrisome=TRUE, no_genes=40) {
+  merged_dataset <- merge_datasets(deres_list)
+  prepped_counts <- prepare_new_data(merged_dataset$counts)
+  n_clusters <- length(nmf_data$limma_res)
+  
+  cluster_defining_genes <- get_cluster_defining_genes(nmf_data, matrisome, no_genes)
+  
+  ssgsea <- ssgseaParam(prepped_counts %>% as.matrix(), cluster_defining_genes, 
+                        minSize = 1, maxSize = Inf,
+                        alpha = 0.25, normalize = TRUE)
+  ssgsea_scores <- gsva(ssgsea, verbose = TRUE) %>% t() %>% as.data.frame()
+  
+  cluster_scores <- sapply(1:n_clusters, function(i) {
+    ssgsea_scores[[paste0("Positive_Cluster_", i)]] - ssgsea_scores[[paste0("Negative_Cluster_", i) ]]
+  })
+
+  cluster_scores_df <- cluster_scores %>% as.data.frame()
+  colnames(cluster_scores_df) <- paste0("Cluster_", 1:length(nmf_data$limma_res))
+  rownames(cluster_scores_df) <- rownames(ssgsea_scores)
+  
+  predicted_clusters <- apply(cluster_scores_df, 1, function(x) {
+    names(x)[which.max(x)]
+  })
+  
+  return(data.frame(sample_id=rownames(cluster_scores_df), cluster=factor(predicted_clusters)))
+}
+
+predict_clusters_nnls <- function(nmf_data, deres_list) {
   # Step 1: Prepare external expression data 
   merged_dataset <- merge_datasets(deres_list)
   
@@ -327,32 +391,44 @@ nmf_new_data <- function(nmf_data, deres_list) {
   names(assigned_clusters) <- colnames(new_expr)
   
   # Step 5: Merge with external response metadata
-  # (Assumes response_meta exists with rownames = sample IDs)
-  response_meta <- merged_dataset$metadata
+  # (Assumes response_meta exists with rownames = sample IDs
   
   assign_df <- data.frame(
     sample_id = names(assigned_clusters),
     cluster = factor(assigned_clusters)
   )
   
+  return(assign_df)
+}
+
+
+visualise_clusters_new_data <- function(assign_df, deres_list, title=NULL) {
+  merged_dataset <- merge_datasets(deres_list)
+  response_meta <- merged_dataset$metadata
   response_meta$sample_id <- rownames(response_meta)
   
   merged_response <- merge(response_meta, assign_df, by = "sample_id")
   
-  # Step 6: Analyze response by cluster
   print(table(merged_response$cluster, merged_response$response))
   print(fisher.test(table(merged_response$cluster, merged_response$response)))
   
-  # Step 7: Plot response proportions
-  library(ggplot2)
+  df_counts <- merged_response %>%
+    count(cluster, response) %>%
+    group_by(cluster) %>%
+    mutate(
+      prop = n / sum(n),
+      ypos = cumsum(prop) - prop / 2  # position at center of bar segment
+    ) %>%
+    ungroup()
   
-  ggplot(merged_response, aes(x = cluster, fill = response)) +
-    geom_bar(position = "fill") +
-    theme_minimal() +
-    ylab("Proportion of Response") +
-    ggtitle("Response by Predicted NMF Cluster")
+  ggplot(df_counts, aes(x = cluster, y = prop, fill = response)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n), position = position_stack(vjust = 0.5), 
+              size = 4, color = "black") +
+    scale_y_continuous(labels = scales::percent) +
+    theme_classic() +
+    labs(title=title, y="Proportion of Response", x=NULL)
 }
-
 
 # ----- 3.3 NMF Downstream  ----
 
@@ -456,5 +532,74 @@ nmf_pathway_analysis <- function(limma_res){
   return(GSEA_res)
 }
 
+
+prep_GSEA_NMF <- function(limma_res) {
+  no_of_clusters <- length(limma_res)
+  
+  # Process data for GSEA analysis
+  gene_lists<-list()
+  for (i in 1:no_of_clusters) {
+    gene_list<-limma_res[[i]]$logFC
+    names(gene_list)<-rownames(limma_res[[i]])
+    
+    #The lists are sorted in decreasing FC for clusterProfiler to work
+    gene_list<-sort(gene_list, decreasing = TRUE)
+    gene_list<-list(gene_list)
+    gene_lists<-append(gene_lists,gene_list)
+  }
+  
+  # Perform GSEA analysis
+  GSEA_res<-list()
+  for (i in 1:no_of_clusters) {
+    # prep hallmark pathways
+    msigdb_sets_hallmark <- msigdbr(species = "human", collection = "H")
+    msigdb_sets_hallmark <- msigdb_sets_hallmark[msigdb_sets_hallmark$gs_name %in% paste0("HALLMARK_", hallmark_pathways$ID), ]
+    msigdbr_t2g_hallmark <- dplyr::distinct(msigdb_sets_hallmark, gs_name, gene_symbol)
+    
+    hallmark_enrich <- GSEA(gene_lists[[i]], TERM2GENE = msigdbr_t2g_hallmark, pvalueCutoff = 2)
+    hallmark_enrich <- hallmark_enrich@result
+    hallmark_enrich$facet <- "Hallmark"
+    hallmark_enrich$ID <- sub("HALLMARK_", "", hallmark_enrich$ID)
+    hallmark_enrich <- left_join(hallmark_enrich, hallmark_pathways, by="ID")
+    
+    # custom enrich
+    custom_gene_set <- data.frame(term = matrisome_file$Category, gene = matrisome_file$GeneSymbol)
+    custom_enrich <- GSEA(gene_lists[[i]],  TERM2GENE = custom_gene_set, pvalueCutoff = 2)
+    custom_enrich <- custom_enrich@result
+    custom_enrich$facet <- "Matrisome"
+    custom_enrich <- left_join(custom_enrich, matrisome_pathways, by="ID")
+  
+    
+    # combine
+    gsea <- rbind(hallmark_enrich, custom_enrich)
+    gsea$cluster <- paste0("Cluster ", i)
+    
+    GSEA_res[[paste0("Cluster_", i)]] <- gsea
+  }
+  
+  # combine all
+  combined_gsea_df <- do.call(rbind, GSEA_res) %>% 
+    mutate(significance = ifelse(p.adjust < 0.05, "< 0.05", "≥ 0.05"))
+  
+  gsea_combined <- ggplot(combined_gsea_df, aes(x = ID, y = cluster)) +
+    theme_classic() + 
+    
+    # dotplot
+    geom_point(aes(size = significance, color = NES)) +
+    scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5)) +
+    scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    
+    # nested facet plot
+    ggh4x::facet_nested(cols = vars(facet, category), scales = "free", space = "free") + 
+    
+    # text theme
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size=7),
+      axis.text.y = element_markdown(size = 8),
+      strip.text.x = element_text(size = 8)
+    ) + labs(x = NULL, y = NULL) 
+  
+  return(gsea_combined)
+}
 
 

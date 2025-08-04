@@ -71,6 +71,44 @@ naba_pathways <- c(
   "NABA_CORE_MATRISOME", "NABA_MATRISOME_ASSOCIATED", "NABA_SECRETED_FACTORS"
 )
 
+hallmark_pathways <- data.frame(
+  ID = c(
+    "E2F_TARGETS", "G2M_CHECKPOINT", "MITOTIC_SPINDLE", "MYC_TARGETS_V1", "MYC_TARGETS_V2",
+    "ALLOGRAFT_REJECTION", "COMPLEMENT", "IL2_STAT5_SIGNALING", "IL6_JAK_STAT3_SIGNALING", "INFLAMMATORY_RESPONSE", "INTERFERON_ALPHA_RESPONSE", "INTERFERON_GAMMA_RESPONSE", "TNFA_SIGNALING_VIA_NFKB",
+    "HEDGEHOG_SIGNALING", "KRAS_SIGNALING_DN", "KRAS_SIGNALING_UP", "MTORC1_SIGNALING", "PI3K_AKT_MTOR_SIGNALING", "TGF_BETA_SIGNALING", "WNT_BETA_CATENIN_SIGNALING",
+    "FATTY_ACID_METABOLISM", "GLYCOLYSIS", "HYPOXIA", "OXIDATIVE_PHOSPHORYLATION", "REACTIVE_OXYGEN_SPECIES_PATHWAY",
+    "APOPTOSIS", "DNA_REPAIR", "P53_PATHWAY",
+    "ANGIOGENESIS", "EPITHELIAL_MESENCHYMAL_TRANSITION"
+  ),
+  category = c(
+    rep("proliferation", 5),
+    rep("immune", 8),
+    rep("signaling", 7),
+    rep("metabolism", 5),
+    rep("cell_death", 3),
+    rep("other", 2)
+  )
+)
+
+matrisome_pathways <- data.frame(
+  ID = c("ECM Glycoproteins", "Collagens", "Proteoglycans",
+         "ECM-affiliated Proteins", "ECM Regulators", "Secreted Factors"),
+  category = c(rep("Core", 3), rep("Assoc", 3))
+)
+
+unnecessary_xcell_cells <- c("Adipocytes", "Astrocytes", "Basophils", "Chondrocytes", "CLP",
+                             "CMP", "Eosinophils", "Erythrocytes", "GMP", "Hepatocytes", "HSC",
+                             "Keratinocytes", "Mast cells", "Megakaryocytes", "Melanocytes", "MEP", 
+                             "Mesangial cells", "MPP", "MSC", "Myocytes", "Neurons", "Osteoblast",
+                             "Platelets", "Preadipocytes", "Sebocytes",
+                             "Class-switched memory B-cells")
+
+response_ann_colors <- list(
+  response = c("responder" = "forestgreen", "nonresponder" = "firebrick"),
+  batch = c("GSE179351"="#f53b53", "GSE248014"="#8753f9", 
+            "GSE267814"="#c61f55", "Prince Trial"="#5e23b8")
+)
+
 # ---- 1. Load all datasets  ----
 load_rna_dataset <- function(counts, metadata) {
   # check if csv then import
@@ -710,86 +748,6 @@ ssGSEA_score <- function(counts, metadata, gene_list, plot=TRUE) {
   return(ssgsea_scores)
 }
 
-bagaev_clustering <- function(merged_dataset) {
-  set.seed(42)
-  
-  # Load and Format Gene Sets
-  bagaev_sets <- read.csv("~/Repos/RNASeq Pipeline/bagaev.csv", skip = 1) %>%
-    rename(term = Gene.signature, gene = Gene)
-  
-  # Batch correct
-  combat_corr <- combat_correction(merged_dataset)
-  
-  # ssGSEA scoring
-  ssgsea_bagaev_score <- ssGSEA_score(
-    combat_corr$expr,
-    combat_corr$metadata,
-    bagaev_sets,
-    plot = FALSE
-  )
-  
-  # prepare plot
-  ## row groups
-  row_groups <- setNames(bagaev_sets$Signature.Cluster, bagaev_sets$term)
-  matched_groups <- row_groups[rownames(ssgsea_bagaev_score)]
-  
-  desired_row_group_order <- c(
-    "Angiogenesis/Fibroblasts",
-    "Pro-tumor/Immune infiltrate",
-    "Anti-tumor/Immune infiltrate",
-    "EMT signature/proliferation rate"
-  )
-  
-  row_group_factor <- factor(
-    matched_groups,
-    levels = desired_row_group_order
-  )
-  
-  ## colgroups
-  cluster_metadata <- combat_corr$metadata
-  cluster_metadata$response <- factor(cluster_metadata$response)
-  
-  ann_colors <- list(
-    response = c("responder" = "forestgreen", "nonresponder" = "firebrick")
-  )
-  
-  top_anno <- HeatmapAnnotation(
-    response = cluster_metadata$response,
-    batch = cluster_metadata$batch,
-    col = ann_colors,
-    annotation_legend_param = list(
-      response = list(title = "Response")
-    )
-  )
-  
-  ## heatmap
-  ssgsea_scaled <- t(scale(t(ssgsea_bagaev_score)))
-  
-  ssgsea_scaled_clean <- ssgsea_scaled
-  for (i in 1:nrow(ssgsea_scaled_clean)) {
-    if (anyNA(ssgsea_scaled_clean[i, ])) {
-      ssq_row <- ssgsea_scaled_clean[i, ]
-      ssq_row[is.na(ssq_row)] <- mean(ssq_row, na.rm = TRUE)
-      ssgsea_scaled_clean[i, ] <- ssq_row
-    }
-  }
-  
-  Heatmap(
-    ssgsea_scaled_clean,
-    name = "Z-score",
-    top_annotation = top_anno,
-    row_split = row_group_factor,
-    cluster_columns = TRUE,
-    column_km = 4,
-    cluster_rows = FALSE,
-    row_title_gp = gpar(fontsize = 9, fontface = "bold"),
-    row_names_gp = gpar(fontsize = 8),
-    column_names_gp = gpar(fontsize = 6),
-    show_column_names = TRUE,
-    heatmap_legend_param = list(title = "Z-score", color_bar = "continuous")
-  )
-}
-
 # ---- 7. Bulk Deconvolution  ----
 raw_to_tpm <- function(raw_counts) {
   mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
@@ -836,7 +794,8 @@ raw_to_tpm <- function(raw_counts) {
 deconvolute <- function(expr, method="xcell") {
   # get scores and metadata
   if(method == "xcell") {
-    scores <- xCell::xCellAnalysis(expr) %>% as.data.frame()
+    scores <- xCell::xCellAnalysis(expr) %>% as.data.frame() %>% 
+      filter(! rownames(.) %in% unnecessary_xcell_cells)
   } else if(method == "epic") {
     scores <- EPIC::EPIC(bulk = expr) %>% .$cellFractions %>% t() %>% as.data.frame()
   } else if(method == "mcp") {
@@ -852,6 +811,8 @@ deconvolute <- function(expr, method="xcell") {
     
     scores <- est_Decosus_cells %>% as.data.frame() %>%
       mutate(across(everything(), ~ ifelse(is.nan(.), 0, .)))
+    
+    rownames(scores) <- sub("_.*", "", rownames(scores))
   }
   
   return(scores)
@@ -1224,6 +1185,9 @@ combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
   cluster_deconvolution_combined(deres_list, method = "epic", save=TRUE)
   cluster_deconvolution_combined(deres_list, method = "decosus", save=TRUE)
   
+  merged_dataset <- merge_datasets(deres_list)
+  bagaev_clustering(merged_dataset, save = TRUE)
+  
   pdf(file = pdf_name, width = 8, height = 6)
   png_files <- list.files(path = "combined_analyses", pattern = "\\.png$", full.names = TRUE)
   for (i in seq_along(png_files)) {
@@ -1240,7 +1204,8 @@ combined_printer <- function(deres_list, pdf_name = "combined_analysis.pdf") {
 }
 
 # ---- 10.1 Matrisome Combination Analysis  ----
-genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot=TRUE, save=FALSE) {
+genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot=TRUE, 
+                           save=FALSE, species_prep=FALSE, tissue_prep=FALSE, plot_title = NULL) {
   merged_res_list <- list()
   
   # required files
@@ -1296,37 +1261,71 @@ genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot
   filtered_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% significant_genes,]
   
   # colored labels for species
-  filtered_res_df$dataset_label <- case_when(
-    filtered_res_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", filtered_res_df$dataset, "</span>"),
-    filtered_res_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", filtered_res_df$dataset, "</span>"),
-    TRUE ~ filtered_res_df$dataset
-  )
+  if(species_prep) {
+    filtered_res_df$dataset_label <- case_when(
+      filtered_res_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", filtered_res_df$dataset, "</span>"),
+      filtered_res_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", filtered_res_df$dataset, "</span>"),
+      TRUE ~ filtered_res_df$dataset
+    )
+  } else filtered_res_df$dataset_label <- filtered_res_df$dataset
   
-  # order dataset by tissue
-  filtered_res_df$dataset_label <- factor(
-    filtered_res_df$dataset_label,
-    levels = filtered_res_df %>%
-      distinct(dataset_label, tissue) %>%
-      arrange(tissue, dataset_label) %>%
-      pull(dataset_label)
-  ) %>% paste0(filtered_res_df$tissue, " | ", .)
+  if(tissue_prep) {
+    # order dataset by tissue
+    filtered_res_df$dataset_label <- factor(
+      filtered_res_df$dataset_label,
+      levels = filtered_res_df %>%
+        distinct(dataset_label, tissue) %>%
+        arrange(tissue, dataset_label) %>%
+        pull(dataset_label)
+    ) %>% paste0(filtered_res_df$tissue, " | ", .)
+  }
+  
+  if(genes == "index") plot_title <- "Differential Expression by Matrix Index Genes"
+  else if (!is.null(plot_title)) plot_title <- "Differential Expression by Matrisome Genes"
   
   #plot
   gene_plot <- ggplot(filtered_res_df, aes(x = GeneSymbol, y = dataset_label)) +
+    theme_classic() +
+    
     # dotplot
     geom_point(aes(size = significance, color = log2FoldChange)) +
     scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5, "NA" = 1)) +
     scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
     
     # nested facet plot
-    ggh4x::facet_nested(rows = vars(treatment_status), cols = vars(Division, Category), scales = "free", space = "free") +
+    ggh4x::facet_nested(rows = vars(treatment_status), 
+                        cols = vars(Division, Category),
+                        strip = ggh4x::strip_nested(
+                          text_x = list(
+                            element_text(angle = 0, size = 10),
+                            element_text(angle = 0, size = 10),
+                            element_text(angle = 90, size = 8),
+                            element_text(angle = 90, size = 8),
+                            element_text(angle = 90, size = 8),
+                            element_text(angle = 90, size = 8),
+                            element_text(angle = 90, size = 8),
+                            element_text(angle = 90, size = 8)
+                          )
+                        ),
+                        scales = "free", space = "free") +
     
     # text theme
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1),
       axis.text.y = element_markdown(size = 8),
-      strip.text = element_text(size = 10, angle = 0)
-    )
+      
+      # General facet strip control
+      strip.text.x = element_text(size = 8), 
+      
+      # Rotation approximation
+      strip.text.x.bottom = element_text(angle = 0),  # for rows (if used)
+      strip.text.x.top = element_text(angle = 90, vjust = 0.5),  # this will rotate ALL top strips
+      strip.text.y = element_text(angle=0),
+      strip.placement = "outside",
+      plot.margin = margin(10, 10, 10, 10)
+    ) +
+    labs(title=plot_title,
+         y = NULL, x=NULL)
   
   if(plot) plot(gene_plot)
   if(save) {
@@ -1334,29 +1333,17 @@ genes_combined <- function(deres_list, genes = "index", pvalues_cutoff = 0, plot
     else ggsave("combined_analyses/matrisome_genes_combined.png", gene_plot, scale=3)
   }
   
-  return(significant_genes)
+  print(significant_genes %>% length())
+  return(gene_plot)
 }
 
-other_genes_combined <- function(deres_list, gene_list, cutoff=0, plot=TRUE, save=FALSE) {
+other_genes_combined <- function(deres_list, gene_list, cutoff=0, plot=TRUE, save=FALSE,
+                                 species_prep=FALSE, tissue_prep=FALSE, plot_title=NULL) {
   merged_res_list <- list()
   for (i in seq_along(deres_list)) {
     for (j in seq_along(deres_list[[i]])) {
       entry <- deres_list[[i]][[j]]
       res <- entry$res
-      
-      # species check and filter res
-      if(entry$species == "human") {
-        res <- res %>% filter(gene_name %in% matrisome_file$GeneSymbol)
-        res <- merge(res, matrisome_file, 
-                     by.x = "gene_name", by.y = "GeneSymbol")
-        res$GeneSymbol <- res$gene_name
-      }
-      else {
-        res <- res %>% filter(gene_name %in% matrisome_file$mouse)
-        res <- merge(res, matrisome_file,
-                     by.x = "gene_name", by.y = "mouse")
-        res$mouse <- res$gene_name
-      }
       
       # metadata
       res$treatment_status <- sub(".*_(.*)$", "\\1", entry$name)
@@ -1370,12 +1357,20 @@ other_genes_combined <- function(deres_list, gene_list, cutoff=0, plot=TRUE, sav
   
   combined_res_df <- do.call(rbind, merged_res_list) %>% filter(!is.na(gene_name)) %>%
     mutate(significance = ifelse(is.na(padj), "NA", ifelse(padj < 0.05, "< 0.05", "≥ 0.05")))
-  combined_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% gene_list, ]
+  combined_res_df <- combined_res_df[combined_res_df$gene_name %in% gene_list, ]
+  
+  print(combined_res_df)
   
   significant_genes <- c()
-  for(i in seq_along(matrisome_file$GeneSymbol)) {
-    gene <- matrisome_file$GeneSymbol[i]
-    filter_gene <- combined_res_df %>% filter(GeneSymbol == gene & treatment_status == "response")
+  for(i in seq_along(gene_list)) {
+    gene <- gene_list[i]
+    filter_gene <- combined_res_df %>% filter(gene_name == gene)
+    
+    required_rownames <- c()
+    
+    for (j in seq_along(names(table(combined_res_df$treatment_status))))
+    
+    
     table_significance <- table(filter_gene$significance)
     if ( cutoff == 0 && 
          ("≥ 0.05" %in% names(table_significance) || "< 0.05" %in% names(table_significance))) {
@@ -1385,36 +1380,49 @@ other_genes_combined <- function(deres_list, gene_list, cutoff=0, plot=TRUE, sav
       significant_genes <- c(significant_genes, gene) 
     }
   }
-  filtered_res_df <- combined_res_df[combined_res_df$GeneSymbol %in% significant_genes,]
+  filtered_res_df <- combined_res_df[combined_res_df$gene_name %in% significant_genes,]
   
   # colored labels for species
-  filtered_res_df$dataset_label <- case_when(
-    filtered_res_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", filtered_res_df$dataset, "</span>"),
-    filtered_res_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", filtered_res_df$dataset, "</span>"),
-    TRUE ~ filtered_res_df$dataset
-  )
+  if(species_prep) {
+    filtered_res_df$dataset_label <- case_when(
+      filtered_res_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", filtered_res_df$dataset, "</span>"),
+      filtered_res_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", filtered_res_df$dataset, "</span>"),
+      TRUE ~ filtered_res_df$dataset
+    )
+  } else filtered_res_df$dataset_label <- filtered_res_df$dataset
   
-  # order dataset by tissue
-  filtered_res_df$dataset_label <- factor(
-    filtered_res_df$dataset_label,
-    levels = filtered_res_df %>%
-      distinct(dataset_label, tissue) %>%
-      arrange(tissue, dataset_label) %>%
-      pull(dataset_label)
-  ) %>% paste0(filtered_res_df$tissue, " | ", .)
+  if(tissue_prep) {
+    # order dataset by tissue
+    filtered_res_df$dataset_label <- factor(
+      filtered_res_df$dataset_label,
+      levels = filtered_res_df %>%
+        distinct(dataset_label, tissue) %>%
+        arrange(tissue, dataset_label) %>%
+        pull(dataset_label)
+    ) %>% paste0(filtered_res_df$tissue, " | ", .)
+  }
   
-  gene_plot <- ggplot(filtered_res_df, aes(x = GeneSymbol, y = dataset_label)) +
+  #plot
+  gene_plot <- ggplot(filtered_res_df, aes(x = gene_name, y = dataset_label)) +
+    theme_classic() +
+    
     # dotplot
     geom_point(aes(size = significance, color = log2FoldChange)) +
     scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5, "NA" = 1)) +
     scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
-    ggh4x::facet_nested(rows = vars(treatment_status), scales = "free", space = "free") +
+    
+    # nested facet plot
+    ggh4x::facet_nested(rows = vars(treatment_status), 
+                        scales = "free", space = "free") +
+    
     # text theme
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1),
-      axis.text.y = element_markdown(size = 8),
-      strip.text = element_text(size = 10)
-    )
+      axis.text.y = element_markdown(size = 8, angle = 0),
+      strip.text.y = element_text(angle=0)
+    ) +
+    labs(title=plot_title,
+         y = NULL, x=NULL)
   
   if(plot) plot(gene_plot)
   
@@ -1422,10 +1430,12 @@ other_genes_combined <- function(deres_list, gene_list, cutoff=0, plot=TRUE, sav
     ggsave("combined_analyses/other_genes_combined.png", gene_plot, scale = 3)
   }
   
-  return(significant_genes)
+  print(significant_genes %>% length())
+  return(gene_plot)
 }
 
-index_combined <- function(deres_list, plot=TRUE, save=FALSE) {
+index_combined <- function(deres_list, plot=TRUE, save=FALSE, 
+                           tissue_prep=FALSE) {
   matrisome_index_list <- list()
   
   for (i in seq_along(deres_list)) {
@@ -1449,15 +1459,18 @@ index_combined <- function(deres_list, plot=TRUE, save=FALSE) {
   matrisome_index_df <- do.call(rbind, matrisome_index_list)
   
   # order dataset by tissue
-  matrisome_index_df$dataset <- factor(
-    matrisome_index_df$dataset,
-    levels = matrisome_index_df %>%
-      distinct(dataset, tissue) %>%
-      arrange(tissue, dataset) %>%
-      pull(dataset)
-  ) %>% paste0(matrisome_index_df$tissue, " | ", .)
-  
-  matrisome_index_plot <- ggplot(matrisome_index_df, aes(x=dataset, y=index, fill=response)) +
+  if (tissue_prep) {
+    matrisome_index_df$dataset <- factor(
+      matrisome_index_df$dataset,
+      levels = matrisome_index_df %>%
+        distinct(dataset, tissue) %>%
+        arrange(tissue, dataset) %>%
+        pull(dataset)
+    ) %>% paste0(matrisome_index_df$tissue, " | ", .) 
+  }
+  matrisome_index_plot <- ggplot(matrisome_index_df, 
+                                 aes(x=dataset, y=index, fill=response)) +
+    theme_classic() + 
     geom_boxplot() +
     geom_hline(yintercept = 1, linetype = "dashed", color = "black") + 
     # scale_y_continuous(limits = c(0.7, 1.75)) + 
@@ -1468,6 +1481,8 @@ index_combined <- function(deres_list, plot=TRUE, save=FALSE) {
   
   if(plot) plot(matrisome_index_plot)
   if(save) ggsave("combined_analyses/matrisome_index_combined.png", matrisome_index_plot, scale = 3)
+  
+  return(matrisome_index_plot)
 }
 
 
@@ -1477,38 +1492,7 @@ index_combined <- function(deres_list, plot=TRUE, save=FALSE) {
 prep_gsea_combined <- function(deres_list, species_prep=FALSE, tissue_prep=FALSE) {
   merged_gsea_list <- list()
   
-  # required pathways
-  naba_pathways <- c(
-    "NABA_MATRISOME", "NABA_ECM_REGULATORS", "NABA_ECM_GLYCOPROTEINS",
-    "NABA_COLLAGENS", "NABA_PROTEOGLYCANS", "NABA_ECM_AFFILIATED",
-    "NABA_CORE_MATRISOME", "NABA_MATRISOME_ASSOCIATED", "NABA_SECRETED_FACTORS"
-  )
-  
-  hallmark_pathways <- data.frame(
-    ID = c(
-      "E2F_TARGETS", "G2M_CHECKPOINT", "MITOTIC_SPINDLE", "MYC_TARGETS_V1", "MYC_TARGETS_V2",
-      "ALLOGRAFT_REJECTION", "COMPLEMENT", "IL2_STAT5_SIGNALING", "IL6_JAK_STAT3_SIGNALING", "INFLAMMATORY_RESPONSE", "INTERFERON_ALPHA_RESPONSE", "INTERFERON_GAMMA_RESPONSE", "TNFA_SIGNALING_VIA_NFKB",
-      "HEDGEHOG_SIGNALING", "KRAS_SIGNALING_DN", "KRAS_SIGNALING_UP", "MTORC1_SIGNALING", "PI3K_AKT_MTOR_SIGNALING", "TGF_BETA_SIGNALING", "WNT_BETA_CATENIN_SIGNALING",
-      "FATTY_ACID_METABOLISM", "GLYCOLYSIS", "HYPOXIA", "OXIDATIVE_PHOSPHORYLATION", "REACTIVE_OXYGEN_SPECIES_PATHWAY",
-      "APOPTOSIS", "DNA_REPAIR", "P53_PATHWAY",
-      "ANGIOGENESIS", "EPITHELIAL_MESENCHYMAL_TRANSITION"
-    ),
-    category = c(
-      rep("proliferation", 5),
-      rep("immune", 8),
-      rep("signaling", 7),
-      rep("metabolism", 5),
-      rep("cell_death", 3),
-      rep("other", 2)
-    )
-  )
-  
-  matrisome_pathways <- data.frame(
-    ID = c("ECM Glycoproteins", "Collagens", "Proteoglycans",
-            "ECM-affiliated Proteins", "ECM Regulators", "Secreted Factors"),
-    category = c(rep("Core", 3), rep("Assoc", 3))
-  )
-  
+
   # loop through deres
   for (i in seq_along(deres_list)) {
     for (j in seq_along(deres_list[[i]])) {
@@ -1581,32 +1565,48 @@ prep_gsea_combined <- function(deres_list, species_prep=FALSE, tissue_prep=FALSE
 
 plot_gsea_combined <- function(combined_gsea_df, plot=TRUE, save=FALSE, plot_type=0) {
   # plot type: 0 = all, 1 = matrisome only, 2 = hallmark only
-  if(plot_type == 1) combined_gsea_df <- combined_gsea_df %>% filter(facet != "Hallmark")
-  else if(plot_type == 2) combined_gsea_df <- combined_gsea_df %>% filter(facet == "Hallmark")
+  if(plot_type == 1) {
+    combined_gsea_df <- combined_gsea_df %>% filter(facet != "Hallmark")
+    plot_title = "Matrisome Pathway Enrichment"
+  }
+  else if(plot_type == 2) {
+    combined_gsea_df <- combined_gsea_df %>% filter(facet == "Hallmark")
+    plot_title = "Hallmark Pathway Enrichment"
+  }
+  else if(plot_type == 3) {
+    combined_gsea_df <- combined_gsea_df %>% filter(facet == "Hallmark" | facet == "Matrisome")
+    plot_title = NULL
+  } else plot_title = "Pathway Enrichment"
   
   gsea_combined <- ggplot(combined_gsea_df, aes(x = ID, y = dataset_label)) +
+    theme_classic() +
+    
     # dotplot
     geom_point(aes(size = significance, color = NES)) +
     scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5)) +
     scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
     
     # nested facet plot
-    ggh4x::facet_nested(rows = vars(treatment_status), cols = vars(facet, category), scales = "free", space = "free") + theme_pubr() + 
+    ggh4x::facet_nested(rows = vars(treatment_status), cols = vars(facet, category), scales = "free", space = "free") +
     
     # text theme
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1, size=8),
-      axis.text.y = element_markdown(size = 8),
+      #axis.text.y = element_markdown(size = 8),
       strip.text.x = element_text(size = 8),
       strip.text.y = element_text(angle=0)
-    ) + labs(x = NULL, y = NULL) 
+    ) + labs(title = plot_title,
+             x = NULL, y = NULL)
 
   
   if(plot) plot(gsea_combined)
-  if(save) ggsave("combined_analyses/gsea_combined.png", gsea_combined, scale = 3)
+  if(save) ggsave(paste0("combined_analyses/gsea_combined_", plot_type, ".png"), gsea_combined, scale = 3)
+  
+  return(gsea_combined)
 }
 
-plot_custom_gsea_combined <- function(deres_list, custom_pathway) {
+plot_custom_gsea_combined <- function(deres_list, custom_pathway, 
+                                      tissue_prep=FALSE, species_prep=FALSE, title=NULL) {
   merged_gsea_list <- list()
   
   for (i in seq_along(deres_list)) {
@@ -1633,23 +1633,29 @@ plot_custom_gsea_combined <- function(deres_list, custom_pathway) {
   combined_gsea_df <- do.call(rbind, merged_gsea_list) %>% 
     mutate(significance = ifelse(p.adjust < 0.05, "< 0.05", "≥ 0.05"))
   
-  # colored labels for species
-  combined_gsea_df$dataset_label <- case_when(
-    combined_gsea_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", combined_gsea_df$dataset, "</span>"),
-    combined_gsea_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", combined_gsea_df$dataset, "</span>"),
-    TRUE ~ combined_gsea_df$dataset
-  )
+  if(species_prep) {
+    # colored labels for species
+    combined_gsea_df$dataset_label <- case_when(
+      combined_gsea_df$species == "human" ~ paste0("<span style='color:#2ca25f;'>", combined_gsea_df$dataset, "</span>"),
+      combined_gsea_df$species == "mouse" ~ paste0("<span style='color:#de77ae;'>", combined_gsea_df$dataset, "</span>"),
+      TRUE ~ combined_gsea_df$dataset
+    )
+  } else combined_gsea_df$dataset_label <- combined_gsea_df$dataset
   
   # order dataset by tissue
-  combined_gsea_df$dataset_label <- factor(
-    combined_gsea_df$dataset_label,
-    levels = combined_gsea_df %>%
-      distinct(dataset_label, tissue) %>%
-      arrange(tissue, dataset_label) %>%
-      pull(dataset_label)
-  ) %>% paste0(combined_gsea_df$tissue, " | ", .)
+  if(tissue_prep) {
+    combined_gsea_df$dataset_label <- factor(
+      combined_gsea_df$dataset_label,
+      levels = combined_gsea_df %>%
+        distinct(dataset_label, tissue) %>%
+        arrange(tissue, dataset_label) %>%
+        pull(dataset_label)
+    ) %>% paste0(combined_gsea_df$tissue, " | ", .)
+  }
   
   gsea_combined <- ggplot(combined_gsea_df, aes(x = ID, y = dataset_label)) +
+    theme_classic() +
+    
     # dotplot
     geom_point(aes(size = significance, color = NES)) +
     scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5)) +
@@ -1660,9 +1666,11 @@ plot_custom_gsea_combined <- function(deres_list, custom_pathway) {
       axis.text.x = element_text(angle = 45, hjust = 1),
       axis.text.y = element_markdown(size = 8),
       strip.text = element_text(size = 10)
-    ) + labs(x = NULL, y = NULL)
+    ) + labs(x = NULL, y = NULL, title=title)
   
   plot(gsea_combined)
+  
+  return(gsea_combined)
 }
 
 # ---- 10.3 Common Genes  ----
@@ -1698,7 +1706,8 @@ deconvolute_combined <- function(deres_list, method = "xcell", plot=TRUE, save=F
     if (entry$species == "human") {
       # Try to run deconvolute_significant, and skip on error
       tryCatch({
-        deconv <- deconvolute_significant(entry, method = method)
+        deconv <- deconvolute_significant(entry, method = method) %>%
+          suppressMessages() %>% suppressWarnings() %>% invisible()
         deconv$dataset <- sub("_(?=[^_]*$).*", "", entry$name, perl = TRUE)
         deconv$tissue <- entry$tissue
         merged_deconvolution_list[[entry$name]] <- deconv
@@ -1707,6 +1716,12 @@ deconvolute_combined <- function(deres_list, method = "xcell", plot=TRUE, save=F
       })
     }
   }
+  
+  if(method=="xcell") plot_title <-"xCell"
+  else if(method=="mcp") plot_title <- "MCP Counter"
+  else if(method=="epic") plot_title <- "EPIC"
+  else if(method=="decosus") plot_title <- "BCI Decosus"
+  
   
   # Combine all data and continue as normal
   combined_deconv_df <- do.call(rbind, merged_deconvolution_list) %>%
@@ -1731,17 +1746,23 @@ deconvolute_combined <- function(deres_list, method = "xcell", plot=TRUE, save=F
   
   
   # Plot
-  combined_deconv_plot <- ggplot(combined_deconv_df, aes(x = cell, y = dataset)) +
+  combined_deconv_plot <- ggplot(combined_deconv_df, aes(x = dataset, y = cell)) +
+    theme_classic() +
+    
     geom_point(aes(size = significance, color=log2_fc)) + 
-    scale_size_manual(values = c("≥ 0.05" = 2, "< 0.05" = 5)) +
+    scale_size_manual(values = c("≥ 0.05" = 1, "< 0.05" = 5)) +
     scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10)) + 
+    labs(title = paste0(plot_title, " Deconvolution"), x=NULL, y=NULL) 
+    # + guides(color = "none", size = "none")
   
   if(plot) plot(combined_deconv_plot)
   if(save) ggsave( paste0("combined_analyses/", method, "_deconv_combined.png"), combined_deconv_plot, scale = 3)
+  
+  return(combined_deconv_plot)
 }
 
-cluster_deconvolution_combined <- function(deres_list, method="xcell", clusters = 3, plot=TRUE, save=FALSE) {
+cluster_deconvolution_combined <- function(deres_list, method="xcell", clusters = 0, plot=TRUE, save=FALSE) {
   set.seed(42)
   
   # get merged
@@ -1754,22 +1775,23 @@ cluster_deconvolution_combined <- function(deres_list, method="xcell", clusters 
   
   deconvolution <- deconvolute(expr, method)
   
-  # heatmap
-  ann_colors <- list(
-    response = c("responder" = "forestgreen", "nonresponder" = "firebrick")
-  )
+  if(method=="xcell") plot_title <-"xCell"
+  else if(method=="mcp") plot_title <- "MCP Counter"
+  else if(method=="epic") plot_title <- "EPIC"
+  else if(method=="decosus") plot_title <- "BCI Decosus"
   
+  # heatmap
   top_anno <- HeatmapAnnotation(
     response = metadata$response,
     batch = metadata$batch,
-    col = ann_colors,
+    col = response_ann_colors,
     annotation_legend_param = list(
       response = list(title = "Response")
     )
   )
   
-  
   heatmap <- Heatmap(
+    column_title = paste0(plot_title, " Deconvolution"),
     deconvolution %>% as.matrix(),
     top_annotation = top_anno,
     cluster_columns = TRUE,
@@ -1777,8 +1799,8 @@ cluster_deconvolution_combined <- function(deres_list, method="xcell", clusters 
     row_title_gp = gpar(fontsize = 9, fontface = "bold"),
     row_names_gp = gpar(fontsize = 8),
     column_names_gp = gpar(fontsize = 6),
-    show_column_names = TRUE,
-    heatmap_legend_param = list(color_bar = "continuous")
+    show_column_names = FALSE,
+    heatmap_legend_param = list(title = "Score", color_bar = "continuous")
   )
   
   if(plot) plot(heatmap)
@@ -1789,6 +1811,106 @@ cluster_deconvolution_combined <- function(deres_list, method="xcell", clusters 
     print(heatmap)
     dev.off()
   }  
+  
+  return(heatmap)
+}
+
+bagaev_clustering <- function(merged_dataset, plot=TRUE, save=FALSE, seed=42) {
+  set.seed(seed)
+  
+  # Load and Format Gene Sets
+  bagaev_sets <- read.csv("~/Repos/RNASeq Pipeline/bagaev.csv", skip = 1) %>%
+    rename(term = Gene.signature, gene = Gene)
+  
+  # Batch correct
+  combat_corr <- combat_correction(merged_dataset)
+  
+  # ssGSEA scoring
+  ssgsea_bagaev_score <- ssGSEA_score(
+    combat_corr$expr,
+    combat_corr$metadata,
+    bagaev_sets,
+    plot = FALSE
+  )
+  
+  # prepare plot
+  ## row groups
+  row_groups <- setNames(bagaev_sets$Signature.Cluster, bagaev_sets$term)
+  matched_groups <- row_groups[rownames(ssgsea_bagaev_score)]
+  
+  desired_row_group_order_raw <- c(
+    "Angiogenesis/Fibroblasts",
+    "Pro-tumor Immune infiltrate",
+    "Anti-tumor Immune infiltrate",
+    "EMT signature proliferation rate"
+  )
+  
+  # Create pretty display names with line breaks
+  pretty_row_titles <- c(
+    "Angiogenesis/\nFibroblasts",
+    "Pro-tumor\nImmune infiltrate",
+    "Anti-tumor\nImmune infiltrate",
+    "EMT signature\nproliferation rate"
+  )
+  
+  # Create a named vector to map raw -> pretty
+  row_title_mapping <- setNames(pretty_row_titles, desired_row_group_order_raw)
+  
+  # Create factor with wrapped labels for display, but raw labels for mapping
+  row_group_factor <- factor(
+    row_title_mapping[matched_groups],  # mapped names for labels
+    levels = pretty_row_titles          # correct display order
+  )
+  
+  ## colgroups
+  cluster_metadata <- combat_corr$metadata
+  cluster_metadata$response <- factor(cluster_metadata$response)
+  
+  top_anno <- HeatmapAnnotation(
+    response = cluster_metadata$response,
+    batch = cluster_metadata$batch,
+    col = response_ann_colors,
+    annotation_legend_param = list(
+      response = list(title = "Response")
+    )
+  )
+  
+  ## heatmap
+  ssgsea_scaled <- t(scale(t(ssgsea_bagaev_score)))
+  
+  ssgsea_scaled_clean <- ssgsea_scaled
+  for (i in 1:nrow(ssgsea_scaled_clean)) {
+    if (anyNA(ssgsea_scaled_clean[i, ])) {
+      ssq_row <- ssgsea_scaled_clean[i, ]
+      ssq_row[is.na(ssq_row)] <- mean(ssq_row, na.rm = TRUE)
+      ssgsea_scaled_clean[i, ] <- ssq_row
+    }
+  }
+  
+  heatmap <- Heatmap(
+    ssgsea_scaled_clean,
+    name = "Z-score",
+    top_annotation = top_anno,
+    row_split = row_group_factor,
+    cluster_columns = TRUE,
+    column_km = 4,
+    cluster_rows = FALSE,
+    row_title_gp = gpar(fontsize = 12, fontface = "bold"),
+    row_names_gp = gpar(fontsize = 9),
+    show_column_names = FALSE,
+    heatmap_legend_param = list(title = "Z-score", color_bar = "continuous")
+  )
+  
+  if(plot) plot(heatmap)
+  
+  if(save){
+    png(paste0("combined_analyses/bagaev_clusters.png"),
+        width=10,height=10,units="in",res=800)
+    print(heatmap)
+    dev.off()
+  }  
+  
+  return(heatmap)
 }
 
 # ---- 11. Merger Analysis ----
@@ -1797,10 +1919,12 @@ merge_datasets <- function(deres_list, tissue="pancreas") {
   required_deres <- list()
   # get required datasets
   for (i in seq_along(deres_list)) {
-    deres <- deres_list[[i]]$response
-  
-    if (deres$species == "human") {
-      if (tissue == "all" || deres$tissue == tissue) required_deres[[deres$name]] <- deres
+    if ("response" %in% names(deres_list[[i]])) {
+      deres <- deres_list[[i]]$response
+      
+      if (deres$species == "human") {
+        if (tissue == "all" || deres$tissue == tissue) required_deres[[deres$name]] <- deres
+      }
     }
   }
   
@@ -2018,12 +2142,14 @@ compare_ml_models <- function(df, models = c("rf", "svmRadial", "glmnet"),
 
 plot_model_aucs <- function(results) {
   aucs <- sapply(results, function(x) x$auc)
-  barplot(aucs, beside = TRUE, col = "skyblue",
+  barplot <- barplot(aucs, beside = TRUE, col = "skyblue",
           main = "AUCs of ML Models", ylab = "AUC", ylim = c(0, 1))
+  return(barplot)
 }
 
 extract_model_features <- function(model_results, top_n = 20, plot = TRUE) {
   all_features <- list()
+  plot_list <- list()
   
   for (model_name in names(model_results)) {
     model_obj <- model_results[[model_name]]$model
@@ -2054,20 +2180,23 @@ extract_model_features <- function(model_results, top_n = 20, plot = TRUE) {
     
     if (plot) {
       ggplot(top_df, aes(x = reorder(Feature, Overall), y = Overall)) +
+        theme_classic() + 
         geom_col(fill = "steelblue") +
         coord_flip() +
-        labs(title = paste("Top", top_n, "Features -", model_name),
+        labs(title = paste("Top", nrow(top_df), "Features -", model_name),
              x = "Gene", y = "Importance") +
         theme_minimal() -> p
       print(p)
     }
+    
+    plot_list[[model_name]] <- p
   }
   
-  return(all_features)
+  return(list(features=all_features, plot_list=plot_list))
 }
 
 view_compare_ml <- function(deres_list, use_matrisome=TRUE, tissue="pancreas",
-                            no_features=60) {
+                            no_features=50) {
   merged_dataset <- merge_datasets(deres_list, tissue=tissue)
   ml_df <- prepare_ml_data(merged_dataset, use_matrisome = use_matrisome)
   
@@ -2075,15 +2204,20 @@ view_compare_ml <- function(deres_list, use_matrisome=TRUE, tissue="pancreas",
   model_results <- compare_ml_models(ml_df)
   
   # visualise
-  plot_model_aucs(model_results)
+  barplot <- plot_model_aucs(model_results)
   
   # get top features
-  top_features_list <- extract_model_features(model_results, top_n = no_features, plot=TRUE)
+  top_features <- extract_model_features(model_results, top_n = no_features, plot=TRUE)
+  top_features_list <- top_features$features
+  
+  plot_list <- append(top_features$plot_list, barplot)
+  # plot(ggarrange(plotlist = plot_list))
   
   merge_features_df <- lapply(top_features_list, function(df) {
-    df <- df[, c("Model", "Feature")]  # Keep only necessary columns (optional)
+    df <- df[, c("Model", "Feature", "Overall")] 
     names(df)[names(df) == "Model"] <- "term"
     names(df)[names(df) == "Feature"] <- "gene"
+    names(df)[names(df) == "Overall"] <- "score"
     return(df)
   })
   merged_features <- do.call(rbind, merge_features_df)
@@ -2151,6 +2285,67 @@ signature_finder <- function(deres_list, tissue="all", use_matrisome = TRUE) {
   return(signature)
 }
 
+signature_lobo_finder <- function(deres_list, tissue="all", use_matrisome=TRUE) {
+  plot_list <- list()
+  aucs_test <- c()
+  aucs_train <- c()
+  
+  for(i in seq_along(deres_list)) {
+    filtered_merged_dataset <- merge_datasets(deres_list[-i], tissue=tissue)
+    filtered_ml_df <- prepare_ml_data(filtered_merged_dataset, use_matrisome)
+    filtered_sig <- caret_gene_signature(filtered_ml_df)
+    name <- names(deres_list)[i]
+    
+    removed_metadata <- deres_list[[i]]$response$dds %>% colData() %>% as.data.frame()
+    removed_counts <- deres_list[[i]]$response$dds %>% assay() %>% as.data.frame()
+    
+    if("treatment" %in% colnames(removed_metadata)) {
+      removed_metadata <- removed_metadata %>% filter(tolower(treatment) == "untreated")
+      removed_counts <- removed_counts %>% select(rownames(removed_metadata))
+    }
+    
+    prepped_counts <- prepare_new_data(filtered_merged_dataset$counts)
+    coef_weights <- signature %>% filter(Gene %in% rownames(prepped_counts))
+    coef_scores <- colSums(prepped_counts[coef_weights$Gene, , drop = FALSE] * coef_weights$Weight)
+    metadata <- filtered_merged_dataset$metadata
+    metadata$score <- coef_scores
+    
+    coef_train_plot <- coef_plotter(filtered_sig, 
+                                    filtered_merged_dataset$counts,
+                                    filtered_merged_dataset$metadata, 
+                        title = paste0(name, " left-out train data"))
+    coef_test_plot <- coef_plotter(filtered_sig, 
+                        removed_counts,
+                        removed_metadata, 
+                        title = paste0(name, " left-out test data"))
+    
+    roc_train_plot <- auc_plotter(filtered_sig, 
+                filtered_merged_dataset$counts,
+                filtered_merged_dataset$metadata, 
+                title = paste0(name, " left-out train data"))
+    roc_test_plot <- auc_plotter(filtered_sig, 
+                removed_counts,
+                removed_metadata, 
+                title = paste0(name, " left-out test data"))
+    
+    
+    
+    
+    plot_list[[paste0("train_", name)]] <- coef_train_plot
+    plot_list[[paste0("test_", name)]] <- coef_test_plot
+    aucs_test[name] <- auc(roc_test_plot$roc)
+    aucs_train[name] <- auc(roc_train_plot$roc)
+    
+  }
+  
+  plot(ggarrange(plotlist = plot_list, ncol = 2, nrow = length(deres_list)))
+  
+  barplot(aucs_test, beside = TRUE, col = "steelblue",
+          main = "LOBO Test AUCs by left-out Batch", ylab = "AUC", ylim = c(0, 1))
+  barplot(aucs_train, beside = TRUE, col = "steelblue",
+          main = "LOBO Training AUCs by left-out Batch", ylab = "AUC", ylim = c(0, 1))
+}
+
 # apply various calculated signatures
 signature_applier <- function(signature, raw_counts, metadata=NULL) {
   prepped_counts <- prepare_new_data(raw_counts)
@@ -2197,7 +2392,7 @@ signature_applier <- function(signature, raw_counts, metadata=NULL) {
 }
 
 # view clusterprofiler plots of signature datasets
-signature_dotplot <- function(signature, deres_list) {
+signature_dotplot <- function(signature, deres_list, title=NULL) {
   # include direction
   direction_features <- signature
   direction_features$term <- ifelse(direction_features$Weight > 0, "Signature_Positive", "Signature_Negative")
@@ -2213,8 +2408,14 @@ signature_dotplot <- function(signature, deres_list) {
   # combine
   required_features <- rbind(direction_features, all_features)
   
+  if(!is.null(title)) plot_title <- paste0(title, " Genes Signature Pathway Enrichment")
+  else plot_title <- NULL
+  
   # dotplot
-  plot_custom_gsea_combined(deres_list, required_features)
+  dotplot <- plot_custom_gsea_combined(deres_list, required_features, 
+                            title = plot_title)
+  
+  return(dotplot)
 }
 
 # view all types of signatures calculated
@@ -2222,13 +2423,125 @@ view_signatures <- function(signature, counts, metadata = NULL) {
   signs_plot <- signature_applier(signature, counts, metadata) %>%
     pivot_longer(cols = -c(sample, response), names_to = "method", values_to = "score") %>% 
     ggplot(aes(x = score, fill = response)) + 
+    theme_classic() + 
     facet_wrap(vars(method)) + 
     geom_density(alpha = 0.5)
   
   return(signs_plot)
 }
 
-# ---- 12.3 Immune-Response-related Risk Score  ----
+coef_plotter <- function(signature, raw_counts, metadata=NULL, title=NULL) {
+  prepped_counts <- prepare_new_data(raw_counts)
+  coef_weights <- signature %>% filter(Gene %in% rownames(prepped_counts))
+  coef_scores <- colSums(prepped_counts[coef_weights$Gene, , drop = FALSE] * coef_weights$Weight)
+  
+  metadata$scores <- coef_scores
+  
+  if(!is.null(title)) plot_title <- paste0(title, "Signature Coefficient Density Plot")
+  else plot_title <- NULL
+  
+  signs_plot <- ggplot(metadata, aes(x=scores, fill=response)) +
+    theme_classic() + geom_density(alpha=0.5) + 
+    labs(title = plot_title, x="Score", y="Density")
+  
+  return(signs_plot)
+}
+
+auc_plotter <- function(signature, raw_counts, metadata, title=NULL) {
+  prepped_counts <- prepare_new_data(raw_counts)
+  coef_weights <- signature %>% filter(Gene %in% rownames(prepped_counts))
+  coef_scores <- colSums(prepped_counts[coef_weights$Gene, , drop = FALSE] * coef_weights$Weight)
+  
+  metadata$scores <- coef_scores
+  
+  roc_obj <- roc(metadata$response, metadata$scores)
+  auc_val <- auc(roc_obj)
+  
+  if(!is.null(title)) plot_title <- paste0("AUC ", title, " ",round(roc_obj$auc, 5))
+  else plot_title <- NULL
+  
+  roc_df <- data.frame(
+    specificity = rev(roc_obj$specificities),
+    sensitivity = rev(roc_obj$sensitivities)
+  )
+  
+  # Plot with ggplot2
+  roc_plot <- ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity)) +
+    theme_classic(base_size = 14) + 
+    geom_line(color = "blue", size = 1) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey") +
+    labs(
+      title = plot_title,
+      caption = paste("AUC =", round(auc_val, 5))
+    ) 
+  
+  return(list(roc = roc_obj, plot = roc_plot))
+}
+
+heatmap_signature <- function(signature_data, merged_dataset) {
+  positive_genes <- signature_data %>% filter(Weight > 0) %>% rownames()
+  negative_genes <- signature_data %>% filter(Weight < 0) %>% rownames()
+  
+  meta <- merged_dataset$metadata
+  meta$sample_id <- rownames(meta)
+  expr_mat <- combat_correction(merged_dataset) %>% .$expr
+  # expr_mat <- prepare_new_data(merged_dataset$counts)
+  
+  expr_mat <- expr_mat %>% as.data.frame %>% dplyr::filter(rownames(.) %in% c(positive_genes, negative_genes))
+  expr_mat <- expr_mat[order(match(rownames(expr_mat), signature_data$Gene)), ]
+  # expr_mat <- sweep(as.matrix(expr_mat), 1, signature_data$Weight, `*`)  %>% abs() %>% as.data.frame()
+  
+  # reorder samples by response (no clustering)
+  ordered_samples <- meta[order(meta$response), ]
+  expr_mat <- expr_mat[, ordered_samples$sample_id]  
+  
+  # create annotation for samples
+  annotation_col <- data.frame(
+    response = ordered_samples$response, 
+    batch = ordered_samples$batch
+  )
+  rownames(annotation_col) <- ordered_samples$sample_id
+  
+  # separate positive and negative genes
+  positive_expr <- expr_mat[rownames(expr_mat) %in% positive_genes, ]
+  negative_expr <- expr_mat[rownames(expr_mat) %in% negative_genes, ]
+  
+  # optionally order genes (to control appearance)
+  positive_expr <- positive_expr[order(rownames(positive_expr)), ]
+  negative_expr <- negative_expr[order(rownames(negative_expr)), ]
+  
+  # combine gene sets: positive on top, then negative
+  combined_expr <- rbind(positive_expr, negative_expr)
+  
+  # add annotation for gene type
+  annotation_row <- data.frame(GeneSet = c(
+    rep("Positive", nrow(positive_expr)),
+    rep("Negative", nrow(negative_expr))
+  ))
+  
+  ann_colors <- append(response_ann_colors, 
+                       list(GeneSet = c(Positive="blue", Negative="skyblue")))
+  
+  rownames(annotation_row) <- rownames(combined_expr)
+  
+  # Create heatmap
+  pheat <- pheatmap(
+    combined_expr,
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    annotation_col = annotation_col,
+    annotation_row = annotation_row,
+    annotation_names_row = FALSE,
+    show_rownames = TRUE,
+    show_colnames = FALSE,
+    annotation_colors = ann_colors
+    #scale = "none" 
+  )
+  
+  return(pheat)
+}
+
+# ---- 13. Other Useful Functions  ----
 get_intersection_genes <- function(deres_list, selected_deres, intersection_list) {
   deres <- deres_list[[selected_deres]]
   if("untreated" %in% names(deres)) res <- deres$untreated$res
@@ -2242,145 +2555,6 @@ get_intersection_genes <- function(deres_list, selected_deres, intersection_list
 }
 
 
-# ---- 12.4 Depreciated ML methods ----
-compare_sig_pipeline <- function(deres_list, use_matrisome = TRUE, 
-                               test_counts, test_metadata) {
-  # 1. prepare data
-  merged_dataset <- merge_datasets(deres_list)
-  ml_df <- prepare_ml_data(merged_dataset, use_matrisome)
-  
-  # 2. build signature
-  if (method=="caret") sig_res <- caret_gene_signature(ml_df)
-  else sig_res <- glmnet_gene_signature(ml_df)
-  
-  # 3. apply to train data
-  train_scores <- signature_applier(sig_res, merged_dataset$counts, merged_dataset$metadata) %>% select(sample, coef, response)
-  
-  train_scores$Z <- scale(train_scores$coef)
-  
-  mean_train <- mean(train_scores$coef)
-  sd_train   <- sd(train_scores$coef)
-  
-  train_roc_obj <- roc(train_scores$response, train_scores$coef)
-  train_auc_val <- auc(train_roc_obj)
-  
-  # if (method=="batch") test_scores <- prepare_new_data_batch(test_counts, test_metadata, signature_data$train_counts, signature_data$train_metadata)
-
-  test_scores <- signature_applier(signature_data$signature, test_counts, test_metadata) %>% select(sample, coef, response)
-  
-  test_scores$Z <- (test_scores$coef - mean_train) / sd_train
-  
-  train_plot <- ggplot(train_scores, aes(x = Z, fill = response)) +
-    geom_vline(xintercept = mean(train_scores$Z), linetype = "dashed") +
-    geom_density(alpha = 0.5) +
-    ggtitle("Train data")
-  
-  test_plot <- ggplot(test_scores, aes(x = Z, fill = response)) +
-    geom_vline(xintercept = mean(train_scores$Z), linetype = "dashed") +
-    geom_density(alpha = 0.5) +
-    ggtitle("Test Data")
-  
-  test_roc_obj <- roc(test_scores$response, test_scores$coef)
-  test_auc_val <- auc(test_roc_obj)
-  
-  plot(ggarrange(train_plot, test_plot))
-
-  return(train_auc_val, test_auc_val)
-}
-
-signature_lobo_validate <- function(deres_list, tissue="all", use_matrisome=TRUE) {
-  set.seed(42)
-  
-  merged_dataset <- merge_datasets(deres_list, tissue = tissue)
-  ml_df <- prepare_ml_data(merged_dataset, use_matrisome = use_matrisome)
-  
-  metadata <- merged_dataset$metadata
-  batches <- unique(metadata$batch)
-  
-  results <- list()
-  
-  for (b in batches) {
-    message("Leaving out batch: ", b)
-    
-    # Identify samples
-    test_ids <- rownames(metadata[metadata$batch == b, ])
-    train_ids <- rownames(metadata[metadata$batch != b, ])
-    
-    train_df <- ml_df[train_ids, ]
-    test_df  <- ml_df[test_ids, ]
-    
-    # Train signature
-    sig <- caret_gene_signature(train_df)
-    
-    # Score training
-    train_scores <- apply_gene_signature(train_df[, -which(names(train_df) == "response")], sig)
-    train_scores$Z <- scale(train_scores$Score)
-    train_scores$response <- train_df$response
-    
-    # Score testing (Z-normalize using train stats)
-    mean_train <- mean(train_scores$Score)
-    sd_train   <- sd(train_scores$Score)
-    
-    test_scores <- apply_gene_signature(test_df[, -which(names(test_df) == "response")], sig)
-    test_scores$Z <- (test_scores$Score - mean_train) / sd_train
-    test_scores$response <- test_df$response
-    
-    # ROC
-    roc_obj <- roc(response = test_scores$response, predictor = test_scores$Score)
-    auc_val <- auc(roc_obj)
-    
-    # Save
-    results[[b]] <- list(
-      batch = b,
-      train_scores = train_scores,
-      test_scores = test_scores,
-      auc = auc_val,
-      roc = roc_obj,
-      signature = sig
-    )
-  }
-  
-  return(results)
-}
-
-plot_lobo_aucs <- function(lobo_results) {
-  aucs <- sapply(lobo_results, function(x) x$auc)
-  
-  # Barplot AUCs
-  barplot(aucs, beside = TRUE, col = "steelblue",
-          main = "LOBO AUCs per Batch", ylab = "AUC", ylim = c(0, 1))
-}
-
-plot_lobo_results <- function(lobo_results) {
-  plots <- list()
-  
-  for (batch_name in names(lobo_results)) {
-    res <- lobo_results[[batch_name]]
-    train_df <- res$train_scores
-    test_df <- res$test_scores
-    
-    # Train plot
-    p_train <- ggplot(train_df, aes(x = Z, fill = response)) +
-      geom_density(alpha = 0.5) +
-      ggtitle(paste("Train (excluding", batch_name, ")")) +
-      theme_minimal()
-    
-    # Test plot
-    p_test <- ggplot(test_df, aes(x = Z, fill = response)) +
-      geom_density(alpha = 0.5) +
-      ggtitle(paste("Test (batch =", batch_name, ")\nAUC =", round(res$auc, 3))) +
-      theme_minimal()
-    
-    # Arrange side by side
-    plots[[batch_name]] <- ggarrange(p_train, p_test, ncol = 2)
-  }
-  
-  # Combine all arranged plots into a grid
-  final_plot <- ggarrange(plotlist = plots, ncol = 1)
-  return(final_plot)
-}
-
-# ---- 13. Other Useful Functions  ----
 combine_pdfs <- function(pdfs_dir="printer_analyses", output_file="combined.pdf") {
   pdf_files <- list.files(pdfs_dir, pattern = "\\.pdf$", full.names = TRUE)
   if (length(pdf_files) > 0) {
