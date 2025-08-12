@@ -58,8 +58,8 @@ library(BiocParallel)
 
 
 # ----- VARIABLES ALTER AS NEEDED  ----
-matrisome_file <- read.csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
-immuno_file <- read.csv("~/Repos/RNASeq Pipeline/InnateDB_genes.csv")
+matrisome_file <- read.csv("~/Repos/RNASeq Pipeline/gene_lists/Matrisome_Hs_MasterList_SHORT.csv")
+immuno_file <- read.csv("~/Repos/RNASeq Pipeline/gene_lists/InnateDB_genes.csv")
 matrisome_index_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1", "AGT", "ANXA5", "ANXA6", "LAMB1", "FBLN2", "LAMC1", "LGALS3", "CTSG", "HSPG2", "COL15A1", "ANXA1", "LAMA4", "COL6A6", "VWF", "ABI3BP", "TNXB")
 
 positive_genes <- c("COL11A1", "COMP", "FN1", "VCAN", "CTSB", "COL1A1")
@@ -1819,7 +1819,7 @@ bagaev_clustering <- function(merged_dataset, plot=TRUE, save=FALSE, seed=42) {
   set.seed(seed)
   
   # Load and Format Gene Sets
-  bagaev_sets <- read.csv("~/Repos/RNASeq Pipeline/bagaev.csv", skip = 1) %>%
+  bagaev_sets <- read.csv("~/Repos/RNASeq Pipeline/gene_lists/bagaev.csv", skip = 1) %>%
     rename(term = Gene.signature, gene = Gene)
   
   # Batch correct
@@ -2018,7 +2018,7 @@ prepare_new_data <- function(counts) {
 }
 
 merged_filter_matrisome <- function(expr) {
-  matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv")
+  matrisome_file <- read_csv("~/Repos/RNASeq Pipeline/gene_lists/Matrisome_Hs_MasterList_SHORT.csv")
   matrisome_file$...4 <- NULL
   
   expr <- expr %>% as.data.frame() %>% annotate_df("annodbi", "human") %>%
@@ -2547,7 +2547,7 @@ get_intersection_genes <- function(deres_list, selected_deres, intersection_list
   if("untreated" %in% names(deres)) res <- deres$untreated$res
   else res <- deres$response$res
   
-  matrisome_genes <- read.csv("~/Repos/RNASeq Pipeline/Matrisome_Hs_MasterList_SHORT.csv") %>% .$GeneSymbol
+  matrisome_genes <- read.csv("~/Repos/RNASeq Pipeline/gene_lists/Matrisome_Hs_MasterList_SHORT.csv") %>% .$GeneSymbol
   
   intersection_list <- res %>% filter(abs(log2FoldChange) > 1 & padj < 0.05) %>% filter(gene_name %in% intersection_list) %>% .$gene_name
   
