@@ -196,7 +196,7 @@ plot_survival_signature <- function(signature, method="coef", title=FALSE) {
   clinical <- load_data() %>% colData()
   
   # set expression group
-  expr_group <- ifelse(score[[method]] > median(score[[method]], na.rm=TRUE), "High", "Low")
+  expr_group <- ifelse(score[[method]] < median(score[[method]], na.rm=TRUE), "Low", "High")
   
   # get survival data
   surv_df <- clinical %>% as.data.frame()
@@ -208,7 +208,7 @@ plot_survival_signature <- function(signature, method="coef", title=FALSE) {
   
   # get plot
   plot <- ggsurvplot(fit, data = surv_df, pval = TRUE,
-                     title = plot_title)$plot
+                     title = plot_title, palette = c("#00BFC4", "#F8766D") )$plot
   
   return(plot)
 }
